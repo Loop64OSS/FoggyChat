@@ -44,3 +44,21 @@ pub fn decrypt_message(
 
     Ok(plain_text)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symmetric_encryption_roundtrip() {
+        let random_key = keygen();
+
+        let test_string = "test";
+
+        let encrypted_message = encrypt_message(&test_string, &random_key).unwrap();
+        let decrypted_message = decrypt_message(&encrypted_message, &random_key).unwrap();
+
+        assert_eq!(decrypted_message, test_string);
+    }
+
+}
