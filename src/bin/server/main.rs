@@ -1,3 +1,4 @@
+#![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
 use rand::{Rng, distributions::Alphanumeric};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,13 +35,16 @@ fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
     let mut lines = msg.lines();
 
     if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
+        println!(
+            "Protocol header does not match expected format. Update your client or contact the administrator of the server."
+        );
         return None;
     }
-
+    //TODO: base64 encoding
     let code = lines.next()?.trim().parse::<i32>().ok()?; // ABSOLUTELY REQUIRED, MUST BE A NUMBER IN INT FORMAT 32 BIT SIZE
     let from = lines.next()?.strip_prefix("From: ")?.trim().to_string();
     let body = lines.next()?.strip_prefix("Body: ")?.trim().to_string();
-    let to = lines.next()?.strip_prefix("To: ")?.trim().to_string(); // To: is optional, but we keep it for consistency. TL/DR: ignored
+    let to = lines.next()?.strip_prefix("To: ")?.trim().to_string(); // To: is optional, but we keep it for consistency (may be used to remind the client about its id). TL/DR: ignored
 
     Some(FctpMessage {
         code,
