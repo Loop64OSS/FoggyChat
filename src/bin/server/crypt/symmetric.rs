@@ -1,7 +1,6 @@
+#![allow(dead_code)]
 use aes_gcm::{
-    Aes256Gcm,
-    Key, // Or `Aes128Gcm`
-    Nonce,
+    Aes256Gcm, Key, Nonce,
     aead::{Aead, AeadCore, KeyInit, OsRng},
 };
 use base64::prelude::*;

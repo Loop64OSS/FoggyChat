@@ -1,10 +1,14 @@
 #![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
-use rand::{Rng, distributions::Alphanumeric};
+mod crypt;
+use crypt::asymmetric;
+use crypt::symmetric;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use uuid::Uuid;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 type Clients = Arc<Mutex<HashMap<String, tokio::net::tcp::OwnedWriteHalf>>>;
 
@@ -16,14 +20,28 @@ struct FctpMessage {
     to: String,
 }
 
-fn generate_id() -> String {
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(10)
-        .map(char::from)
-        .collect()
+fn generate_id() -> uuid::Uuid {
+    let uuid = Uuid::new_v4();
+    uuid
 }
 
+/*
+    Set global Server ID using OnceLock (USE ONLY WITH SERVER ID FILE IN PRODUCTION!!!!)
+*/
+
+static ID: OnceLock<String> = OnceLock::new();
+
+pub fn set_id(new_id: &str) {
+    ID.set(new_id.to_owned()).expect("ID already set!");
+}
+
+pub fn get_id() -> &'static str {
+    ID.get().map(|s| s.as_str()).expect("ID not set yet!")
+}
+/**/
+/*
+    FCTP message processing
+*/
 fn encapsulate_to_fctp(code: i32, from: &str, body: &str, to: &str) -> String {
     format!(
         "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n",
@@ -35,9 +53,6 @@ fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
     let mut lines = msg.lines();
 
     if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
-        println!(
-            "Protocol header does not match expected format. Update your client or contact the administrator of the server."
-        );
         return None;
     }
     //TODO: base64 encoding
@@ -63,29 +78,38 @@ async fn send_broadcast(
     for (client_id, writer) in map.iter_mut() {
         if client_id != id {
             let _ = writer
-                .write_all(encapsulate_to_fctp(201, "server", message, client_id).as_bytes())
+                .write_all(encapsulate_to_fctp(201, get_id(), message, client_id).as_bytes())
                 .await;
         }
     }
     Ok(())
 }
-
+async fn kick_client(clients: &Clients, id: &str) {
+    let mut map = clients.lock().await;
+    if let Some(writer) = map.remove(id) {
+        drop(writer);
+        println!("User {} got kicked", id);
+    } else {
+        println!("User {} doesn't exist.", id);
+    }
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8081").await?;
     let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
-
+    set_id("b0ba4f3e-3d19-4f5f-bae2-ece5f6464702"); // SERVER ID WILL NOT BE HARD-CODED IN PRODUCTION, IT WILL BE LOADED FROM FILE!!!
     loop {
         let (socket, _) = listener.accept().await?;
         let clients = clients.clone();
         let id = generate_id();
+        let id_string = id.to_string();
         let (mut reader, writer) = socket.into_split();
         {
             let mut map = clients.lock().await;
-            map.insert(id.clone(), writer);
+            map.insert(id_string.clone(), writer);
         }
 
-        let id_clone = id.clone();
+        let id_clone = id_string.clone();
 
         tokio::spawn(async move {
             {
@@ -93,10 +117,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut map = clients.lock().await;
                 if let Some(writer) = map.get_mut(&id_clone) {
                     let _ = writer
+                        .write_all(encapsulate_to_fctp(900, get_id(), "id", &id_clone).as_bytes())
+                        .await;
+                    let _ = writer
                         .write_all(
                             encapsulate_to_fctp(
                                 201,
-                                "server",
+                                get_id(),
                                 &format!(
                                     "motd=Welcome to Loop64.com FoggyChat server. id={}",
                                     &id_clone
@@ -148,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .write_all(
                                             encapsulate_to_fctp(
                                                 405,
-                                                "server",
+                                                get_id(),
                                                 "Not found",
                                                 &id_clone,
                                             )
@@ -163,10 +190,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(writer) = map.get_mut(&id_clone) {
                                 let _ = writer
                                     .write_all(
-                                        encapsulate_to_fctp(11, "server", "pong", &id_clone)
+                                        encapsulate_to_fctp(11, get_id(), "pong", &id_clone)
                                             .as_bytes(),
                                     )
                                     .await;
+                            }
+                            continue;
+                        } else if fctp_message.code == 201 {
+                            // Commands
+                            let mut map = clients.lock().await;
+                            if let Some(writer) = map.get_mut(&id_clone) {
+                                if fctp_message.body.trim() == "help" {
+                                    let msg = format!(
+                                        "Welcome to server! ServerID: {} / Available commands: /help",
+                                        get_id()
+                                    );
+                                    let _ = writer
+                                        .write_all(
+                                            encapsulate_to_fctp(201, get_id(), &msg, &id_clone)
+                                                .as_bytes(),
+                                        )
+                                        .await;
+                                } else {
+                                    let msg = format!(
+                                        "Welcome to server! ServerID: {} / Unknown command: {}",
+                                        get_id(),
+                                        fctp_message.body.trim()
+                                    );
+                                    let _ = writer
+                                        .write_all(
+                                            encapsulate_to_fctp(201, get_id(), &msg, &id_clone)
+                                                .as_bytes(),
+                                        )
+                                        .await;
+                                }
                             }
                             continue;
                         } else {
@@ -176,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .write_all(
                                         encapsulate_to_fctp(
                                             505,
-                                            "server",
+                                            get_id(),
                                             "Unsupported header code, error!",
                                             &id_clone,
                                         )
@@ -193,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .write_all(
                                     encapsulate_to_fctp(
                                         505,
-                                        "server",
+                                        get_id(),
                                         "Malformed header, error!",
                                         &id_clone,
                                     )
@@ -207,5 +264,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut map = clients.lock().await;
             map.remove(&id_clone);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn symmetric() {
+        let key = symmetric::keygen();
+
+        match symmetric::encrypt("test", &key) {
+            Ok(encrypted) => {
+                println!("Encrypted: {}", encrypted);
+
+                match symmetric::decrypt(&encrypted, &key) {
+                    Ok(decrypted) => println!("Decrypted: {}", decrypted),
+                    Err(e) => eprintln!("Decryption error: {}", e),
+                }
+            }
+            Err(e) => eprintln!("Encryption error: {}", e),
+        }
+    }
+    #[test]
+    fn asymmetric() {
+        let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
+        let rec_sec = StaticSecret::from(rec_sec_bytes);
+        let rec_pub = PublicKey::from(rec_pub_bytes);
+        match asymmetric::encrypt(&rec_pub, "test".as_bytes()) {
+            Ok(encrypted) => match asymmetric::decrypt(&rec_sec, &encrypted) {
+                Ok(decrypted) => println!("Decrypted: {}", String::from_utf8_lossy(&decrypted)),
+                Err(e) => eprintln!("Decryption error: {}", e),
+            },
+            Err(e) => eprintln!("Encryption error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_generate_id() {
+        let id = generate_id();
+        assert!(!id.is_nil(), "Generated ID should not be nil");
+        println!("Generated ID: {}", id);
     }
 }

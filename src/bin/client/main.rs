@@ -4,9 +4,13 @@ use crypt::asymmetric;
 use crypt::symmetric;
 use regex::Regex;
 use std::process::exit;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -19,10 +23,42 @@ struct FctpMessage {
     to: String,
 }
 
+/*
+    Set global user ID using OnceLock
+*/
+
+static ID: OnceLock<String> = OnceLock::new();
+
+pub fn set_id(new_id: &str) {
+    ID.set(new_id.to_owned()).expect("ID already set!");
+}
+
+pub fn get_id() -> &'static str {
+    ID.get().map(|s| s.as_str()).expect("ID not set yet!")
+}
+/**/
+static SERVER_ID: OnceLock<String> = OnceLock::new();
+
+pub fn set_server_id(new_id: &str) {
+    SERVER_ID.set(new_id.to_owned()).expect("ID already set!");
+}
+
+pub fn get_server_id() -> &'static str {
+    SERVER_ID
+        .get()
+        .map(|s| s.as_str())
+        .expect("ID not set yet!")
+}
+/*
+    FCTP message processing
+*/
 fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
     let mut lines = msg.lines();
 
     if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
+        println!(
+            "Protocol header does not match expected format. Update your client or contact the administrator of the server."
+        );
         return None;
     }
 
@@ -42,29 +78,35 @@ fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
 fn encapsulate_to_fctp(code: i32, from: &str, body: &str, to: &str) -> String {
     format!(
         "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n",
-        code, /* TODO: REMEMBER TO REPLACE (FROM) "me" WITH ID EVERYWHERE!!! */ from, body, to
+        code, from, body, to
     )
 }
-
-async fn process_fctp_stream(message: String, tx: &mpsc::Sender<String>) {
+async fn process_fctp_stream(message: String, last_pong: &Arc<Mutex<Instant>>) {
     if let Some(msg) = decapsulate_fctp_message(&message) {
         //pool 4xx - client-side errors
         //pool 5xx - server-side errors
         //pool 2xx - message handling
         //pool 1x - //TODO: connection handling (ping/pong)
         //pool 8xx - //TODO: encryption handshake
-        //pool 9xx - //TODO: logon information ex. logged in, session info
+        //pool 9xx - //TODO: session information ex. logged in, id, etc.
         match msg.code {
             200 => println!("[Message received] <{}> {}", msg.from, msg.body), //User-user direct message
-            201 => println!(" {}: {}", msg.from, msg.body), //From-server general direct message
-            405 => println!("[!cl!] {}: {}", msg.from, msg.body), //Client-side error
-            505 => println!("[!sv!] {}: {}", msg.from, msg.body), //Server-side error
-            11 => {
-                let pong = encapsulate_to_fctp(10, "me", "pong", &msg.from);
-                if let Err(e) = tx.send(pong + "\n").await {
-                    eprintln!("Couldn't send pong: {}", e);
+            201 => println!("SERVER: {}", msg.body), //From-server general direct message
+            405 => println!("[!cl!] {}", msg.body),  //Client-side error
+            505 => println!("[!sv!] {}", msg.body),  //Server-side error
+            900 => {
+                if msg.body == "id" {
+                    let id_clone = msg.to.clone();
+                    let server_id_clone = msg.from.clone();
+                    set_id(&id_clone);
+                    set_server_id(&server_id_clone);
                 }
-            } //Pong handling (ping code 10, pong code 11), //TODO: connection keep-alive
+                println!("DEBUG: ID: {}", get_id());
+            }
+            11 => {
+                let mut pong_time = last_pong.lock().await;
+                *pong_time = Instant::now();
+            } //Pong handling (ping code 10, pong code 11)
             _ => println!(
                 "[!Unsupported code!]: {}\n !Update your client software or ask server administrator to update his server software!",
                 msg.code
@@ -74,6 +116,8 @@ async fn process_fctp_stream(message: String, tx: &mpsc::Sender<String>) {
         eprintln!("[!Malformed header!]: {}", message);
     }
 }
+//
+//User input parser
 fn parse_input(input: &str) -> Result<(&str, &str), &'static str> {
     let re = Regex::new(r"^([^:]+):([^:]+)$").unwrap();
     if let Some(caps) = re.captures(input) {
@@ -94,8 +138,9 @@ async fn main() {
     let (reader, writer) = stream.into_split();
     let reader = BufReader::new(reader);
     let (tx, mut rx) = mpsc::channel::<String>(100);
+    let last_pong = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+    let last_pong_clone = last_pong.clone();
 
-    let tx_clone = tx.clone();
     tokio::spawn(async move {
         //receive messages from server and process them
         let mut lines = reader.lines();
@@ -107,7 +152,7 @@ async fn main() {
                     message.truncate(message.len() - 1);
                     message.push_str("\r\n\r\n");
                 }
-                process_fctp_stream(message.clone(), &tx_clone).await;
+                process_fctp_stream(message.clone(), &last_pong_clone).await;
                 message.clear();
             } else {
                 message.push_str(&line);
@@ -128,6 +173,20 @@ async fn main() {
         }
     });
 
+    let last_pong_clone = last_pong.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let elapsed = last_pong_clone.lock().await.elapsed();
+            if elapsed.as_millis() > 5000 {
+                println!(
+                    "server is not responding, last pong was sent {} ms ago",
+                    elapsed.as_millis()
+                );
+            }
+        }
+    });
+
     {
         // stdin handle messaging,commands etc. and send it to server
         let tx = tx.clone();
@@ -137,11 +196,21 @@ async fn main() {
                 // Parse user input and send it to mpsc channel
                 match parse_input(&line) {
                     Ok((id, msg)) => {
-                        let packet = encapsulate_to_fctp(200, "me", msg.trim(), id.trim());
+                        let packet = encapsulate_to_fctp(200, get_id(), msg.trim(), id.trim());
                         let _ = tx.send(packet + "\n").await;
                     }
                     Err(e) => {
                         eprintln!("Parse error: {}", e);
+                    }
+                }
+                match &line.starts_with("/") {
+                    true => {
+                        let command = line.trim_start_matches('/').trim();
+                        let packet = encapsulate_to_fctp(201, get_id(), command, get_server_id());
+                        let _ = tx.send(packet + "\n").await;
+                    }
+                    false => {
+                        eprintln!("Commands must start with '/'");
                     }
                 }
             }
@@ -156,8 +225,10 @@ async fn main() {
                 sleep(Duration::from_secs(2)).await;
                 if tx
                     .send(encapsulate_to_fctp(
-                        10, "me", /* TODO: Replace me with user id later*/
-                        "ping", "server",
+                        10,
+                        get_id(), /* TODO: Replace me with user id later*/
+                        "ping",
+                        get_server_id(),
                     ))
                     .await
                     .is_err()
