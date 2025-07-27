@@ -1,7 +1,13 @@
 use tokio::io::AsyncWriteExt;
 
-use crate::{FctpMessage, get_id, protocol_utils::fctp_client};
-
+use crate::{get_id, protocol_utils::fctp_client};
+pub struct FctpMessage {
+    pub code: i32,
+    pub from: String,
+    pub body: String,
+    #[allow(dead_code)] //pieprzony rust analyzer \/
+    pub to: String,
+}
 /*
     FCTP message processing
 */

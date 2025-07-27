@@ -3,6 +3,7 @@ mod crypt;
 mod protocol_utils;
 use crypt::asymmetric;
 use crypt::symmetric;
+use protocol_utils::fctp;
 use std::collections::HashMap;
 use std::process::exit;
 use std::sync::{Arc, OnceLock};
@@ -11,16 +12,6 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
-
-use crate::protocol_utils::fctp;
-
-struct FctpMessage {
-    code: i32,
-    from: String,
-    body: String,
-    #[allow(dead_code)] //pieprzony rust analyzer \/
-    to: String,
-}
 
 /*
     Set global Server ID using OnceLock (USE ONLY WITH SERVER ID FILE IN PRODUCTION!!!!)
