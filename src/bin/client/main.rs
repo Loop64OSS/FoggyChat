@@ -2,10 +2,12 @@
 mod crypt;
 use crypt::asymmetric;
 use crypt::symmetric;
+use lazy_static::lazy_static;
 use regex::Regex;
 use std::process::exit;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -14,7 +16,6 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use x25519_dalek::{PublicKey, StaticSecret};
-
 struct FctpMessage {
     code: i32,
     from: String,
@@ -27,27 +28,27 @@ struct FctpMessage {
     Set global user ID using OnceLock
 */
 
-static ID: OnceLock<String> = OnceLock::new();
+lazy_static! {
+    static ref ID: RwLock<String> = RwLock::new(String::new());
+    static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
+}
 
 pub fn set_id(new_id: &str) {
-    ID.set(new_id.to_owned()).expect("ID already set!");
+    let mut id = ID.write().expect("Lock poisoned");
+    *id = new_id.to_string();
 }
 
-pub fn get_id() -> &'static str {
-    ID.get().map(|s| s.as_str()).expect("ID not set yet!")
+pub fn get_id() -> String {
+    ID.read().expect("Lock poisoned").clone()
 }
-/**/
-static SERVER_ID: OnceLock<String> = OnceLock::new();
 
 pub fn set_server_id(new_id: &str) {
-    SERVER_ID.set(new_id.to_owned()).expect("ID already set!");
+    let mut id = SERVER_ID.write().expect("Lock poisoned");
+    *id = new_id.to_string();
 }
 
-pub fn get_server_id() -> &'static str {
-    SERVER_ID
-        .get()
-        .map(|s| s.as_str())
-        .expect("ID not set yet!")
+pub fn get_server_id() -> String {
+    SERVER_ID.read().expect("Lock poisoned").clone()
 }
 /*
     FCTP message processing
@@ -196,7 +197,7 @@ async fn main() {
                 // Parse user input and send it to mpsc channel
                 match parse_input(&line) {
                     Ok((id, msg)) => {
-                        let packet = encapsulate_to_fctp(200, get_id(), msg.trim(), id.trim());
+                        let packet = encapsulate_to_fctp(200, &get_id(), msg.trim(), id.trim());
                         let _ = tx.send(packet + "\n").await;
                     }
                     Err(e) => {
@@ -206,7 +207,7 @@ async fn main() {
                 match &line.starts_with("/") {
                     true => {
                         let command = line.trim_start_matches('/').trim();
-                        let packet = encapsulate_to_fctp(201, get_id(), command, get_server_id());
+                        let packet = encapsulate_to_fctp(201, &get_id(), command, &get_server_id());
                         let _ = tx.send(packet + "\n").await;
                     }
                     false => {
@@ -226,9 +227,9 @@ async fn main() {
                 if tx
                     .send(encapsulate_to_fctp(
                         10,
-                        get_id(), /* TODO: Replace me with user id later*/
+                        &get_id(), /* TODO: Replace me with user id later*/
                         "ping",
-                        get_server_id(),
+                        &get_server_id(),
                     ))
                     .await
                     .is_err()
@@ -290,5 +291,48 @@ mod tests {
 
         let invalid_input = "invalid_input";
         assert!(parse_input(invalid_input).is_err());
+    }
+    #[test]
+    fn test_parse_input_edge_cases() {
+        assert!(parse_input("a:b:c").is_err());
+        assert!(parse_input("").is_err());
+        assert!(parse_input(" : ").is_ok());
+    }
+    #[test]
+    fn test_fctp_encapsulation_and_decapsulation() {
+        let code = 200;
+        let from = "user123";
+        let body = "Hello, world!";
+        let to = "user456";
+
+        let message = encapsulate_to_fctp(code, from, body, to);
+        let decoded = decapsulate_fctp_message(&message).expect("Failed to parse FCTP message");
+
+        assert_eq!(decoded.code, code);
+        assert_eq!(decoded.from, from);
+        assert_eq!(decoded.body, body);
+        assert_eq!(decoded.to, to);
+    }
+
+    #[test]
+    fn test_fctp_decapsulation_invalid() {
+        let bad_message = "This is not a valid FCTP message";
+        assert!(decapsulate_fctp_message(bad_message).is_none());
+
+        let bad_code =
+            "FoggyChat Transfer Protocol 0.1\r\nabc\r\nFrom: a\r\nBody: b\r\nTo: c\r\n\r\n";
+        assert!(decapsulate_fctp_message(bad_code).is_none());
+
+        let missing_lines =
+            "FoggyChat Transfer Protocol 0.1\r\n200\r\nFrom: user\r\nBody: test\r\n\r\n";
+        assert!(decapsulate_fctp_message(missing_lines).is_none());
+    }
+    #[test]
+    fn test_id_management() {
+        set_id("test_id");
+        assert_eq!(get_id(), "test_id");
+
+        set_server_id("srv_id");
+        assert_eq!(get_server_id(), "srv_id");
     }
 }

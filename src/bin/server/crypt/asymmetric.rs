@@ -1,10 +1,10 @@
 #![allow(dead_code)]
+use aes_gcm::aead::rand_core::RngCore;
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, OsRng},
 };
 use hkdf::Hkdf;
-use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret, x25519};
 
