@@ -1,12 +1,16 @@
 #![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
 mod crypt;
 mod protocol_utils;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::Key;
+use aes_gcm::KeyInit;
 use crypt::asymmetric;
 use crypt::symmetric;
 use lazy_static::lazy_static;
 use protocol_utils::fctp;
 use protocol_utils::fctp_me;
 use regex::Regex;
+use sha2::digest::generic_array::GenericArray;
 use std::process::exit;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -17,6 +21,14 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::sleep;
+use x25519_dalek::PublicKey;
+use x25519_dalek::StaticSecret;
+
+use crate::protocol_utils::fctp_secure::get_exchange_pub;
+use crate::protocol_utils::fctp_secure::get_exchange_sec;
+use crate::protocol_utils::fctp_secure::get_session_key;
+use crate::protocol_utils::fctp_secure::set_exchange;
+use crate::protocol_utils::fctp_secure::set_session_key;
 
 /*
     Set global user ID using OnceLock
@@ -56,36 +68,111 @@ async fn main() {
     let stream = TcpStream::connect("127.0.0.1:8081").await.unwrap(); // start stream //TODO: SOCKS5stream support and address selection in user input
     let (reader, writer) = stream.into_split();
     let reader = BufReader::new(reader);
-    let (tx, mut rx) = mpsc::channel::<String>(100);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
     let last_pong = Arc::new(tokio::sync::Mutex::new(Instant::now()));
     let last_pong_clone = last_pong.clone();
 
-    tokio::spawn(async move {
-        //receive messages from server and process them
-        let mut lines = reader.lines();
-        let mut message = String::new();
-        // Glue the lines together
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.trim().is_empty() && !message.is_empty() {
-                if message.ends_with('\n') {
-                    message.truncate(message.len() - 1);
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            //receive messages from server and process them
+            let mut lines = reader.lines();
+            let mut message = String::new();
+            // Glue the lines together
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !message.ends_with("\r\n\r\n") {
+                    while message.ends_with('\n') || message.ends_with('\r') {
+                        message.pop();
+                    }
                     message.push_str("\r\n\r\n");
                 }
-                fctp::process_fctp_stream(message.clone(), &last_pong_clone).await;
-                message.clear();
-            } else {
-                message.push_str(&line);
-                message.push('\n');
+                if line.trim().is_empty() && !message.is_empty() {
+                    if get_session_key() == Key::<Aes256Gcm>::default() {
+                        if get_exchange_pub() == PublicKey::from([0u8; 32]) {
+                            match crypt::utils::base64_decode(&message.trim()) {
+                                Ok(decoded) => {
+                                    if let Ok(decoded_bytes) =
+                                        TryInto::<[u8; 32]>::try_into(decoded)
+                                    {
+                                        let cert_pub = PublicKey::from(decoded_bytes);
+                                        let (rec_sec_bytes, rec_pub_bytes) =
+                                            asymmetric::keypairgen();
+                                        let rec_sec = StaticSecret::from(rec_sec_bytes);
+                                        let rec_pub = PublicKey::from(rec_pub_bytes);
+                                        set_exchange(rec_pub, rec_sec);
+                                        match asymmetric::encrypt(&cert_pub, rec_pub.as_bytes()) {
+                                            Ok(encrypted) => {
+                                                let _ = tx
+                                                    .send(
+                                                        crypt::utils::base64_encode(&encrypted)
+                                                            .into(),
+                                                    )
+                                                    .await;
+                                            }
+                                            Err(e) => eprintln!("Encryption error: {}", e),
+                                        }
+                                    } else {
+                                        eprintln!("Error: Key must be 32 bytes long");
+                                    }
+                                }
+                                Err(e) => eprintln!("Decoding error: {}", e),
+                            }
+                        } else {
+                            println!("Raw base64 input: {:?}", &message.trim());
+
+                            match crypt::utils::base64_decode(&message.trim()) {
+                                Ok(decoded) => {
+                                    match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
+                                        Ok(decrypted) => {
+                                            if decrypted.len() != 32 {
+                                                eprintln!("Session key must be exactly 32 bytes");
+                                            } else {
+                                                let key_array: &[u8; 32] = decrypted
+                                                    .as_slice()
+                                                    .try_into()
+                                                    .expect("Decrypted key is not 32 bytes");
+
+                                                let session_key: Key<Aes256Gcm> =
+                                                    GenericArray::from_slice(key_array).clone();
+
+                                                set_session_key(session_key);
+                                                println!(
+                                                    "Session key set: {}",
+                                                    crypt::utils::base64_encode(
+                                                        get_session_key().as_slice()
+                                                    )
+                                                );
+                                            }
+                                        }
+                                        Err(_) => eprintln!("Decryption error"),
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Decoding error aes {} / {}", e, &message.trim())
+                                }
+                            }
+                        }
+                    } else {
+                        println!("{}", get_session_key() == Key::<Aes256Gcm>::default());
+                        println!("{}", get_exchange_pub() == PublicKey::from([0u8; 32]));
+
+                        fctp::process_fctp_stream(message.clone(), &last_pong_clone).await;
+                    }
+                    message.clear();
+                } else {
+                    message.push_str(&line);
+                    message.push('\n');
+                }
             }
-        }
-        println!("CON CLOSED - Disconnected");
-        exit(0)
-    });
+            println!("CON CLOSED - Disconnected");
+            exit(0)
+        });
+    }
     tokio::spawn(async move {
         //receive messages from async channel and send them to server - universal sender
         let mut writer = writer;
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = writer.write_all(msg.as_bytes()).await {
+            if let Err(e) = writer.write_all(&msg).await {
                 eprintln!("[!Couldn't send the message!]: {:?}", e);
                 break;
             }
@@ -121,7 +208,7 @@ async fn main() {
                         command,
                         &get_server_id(),
                     );
-                    let _ = tx.send(packet + "\n").await;
+                    let _ = tx.send(packet.into_bytes()).await;
                 } else {
                     match parse_input(&line) {
                         Ok((id, msg)) => {
@@ -131,7 +218,7 @@ async fn main() {
                                 msg.trim(),
                                 id.trim(),
                             );
-                            let _ = tx.send(packet + "\n").await;
+                            let _ = tx.send(packet.into_bytes()).await;
                         }
                         Err(e) => {
                             eprintln!("Parse error: {}", e);
@@ -143,25 +230,30 @@ async fn main() {
     }
 
     {
-        // Ping server every 2 seconds with code 10
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            loop {
-                sleep(Duration::from_secs(2)).await;
-                if tx
-                    .send(fctp::encapsulate_to_fctp(
-                        10,
-                        &fctp_me::get_id(), /* TODO: Replace me with user id later*/
-                        "ping",
-                        &get_server_id(),
-                    ))
-                    .await
-                    .is_err()
-                {
-                    break;
+        if get_session_key() != Key::<Aes256Gcm>::default() {
+            // Ping server every 2 seconds with code 10
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(2)).await;
+                    if tx
+                        .send(
+                            fctp::encapsulate_to_fctp(
+                                10,
+                                &fctp_me::get_id(), /* TODO: Replace me with user id later*/
+                                "ping",
+                                &get_server_id(),
+                            )
+                            .into_bytes(),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     loop {

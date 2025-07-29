@@ -38,7 +38,7 @@ pub fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
 
 pub fn encapsulate_to_fctp(code: i32, from: &str, body: &str, to: &str) -> String {
     format!(
-        "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n",
+        "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n\n",
         code, from, body, to
     )
 }

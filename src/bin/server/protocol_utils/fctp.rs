@@ -1,6 +1,7 @@
+use aes_gcm::{Aes256Gcm, Key};
 use tokio::io::AsyncWriteExt;
 
-use crate::{get_id, protocol_utils::fctp_client};
+use crate::{crypt, get_id, protocol_utils::fctp_client};
 pub struct FctpMessage {
     pub code: i32,
     pub from: String,
@@ -66,7 +67,6 @@ pub async fn command_handler(
         send_fctp_message(client_info, 201, get_id(), &msg, &id_clone).await;
     }
 }
-
 pub async fn send_fctp_message(
     client_info: &mut fctp_client::ClientInfo,
     code: i32,
@@ -75,7 +75,16 @@ pub async fn send_fctp_message(
     to: &str,
 ) {
     let mut writer = client_info.socket.lock().await;
-    let _ = writer
-        .write_all(encapsulate_to_fctp(code, from, body, to).as_bytes())
-        .await;
+    if client_info.conn_session_key != Key::<Aes256Gcm>::default() {
+        if let Ok(encrypted_message) = crypt::symmetric::encrypt(
+            &encapsulate_to_fctp(code, from, body, to),
+            &client_info.conn_session_key,
+        ) {
+            let _ = writer.write_all(encrypted_message.as_bytes()).await;
+        }
+    } else {
+        let _ = writer
+            .write_all(encapsulate_to_fctp(code, from, body, to).as_bytes())
+            .await;
+    }
 }

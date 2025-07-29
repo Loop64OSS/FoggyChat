@@ -1,17 +1,27 @@
 #![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
 mod crypt;
 mod protocol_utils;
+use aes_gcm::Aes256Gcm;
+use aes_gcm::Key;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use crypt::asymmetric;
 use crypt::symmetric;
 use protocol_utils::fctp;
 use std::collections::HashMap;
+use std::default;
 use std::process::exit;
+use std::ptr::null;
 use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
+
+use crate::protocol_utils::fctp_secure::get_cert_pub;
+use crate::protocol_utils::fctp_secure::get_cert_sec;
+use crate::protocol_utils::fctp_secure::set_cert;
 
 /*
     Set global Server ID using OnceLock (USE ONLY WITH SERVER ID FILE IN PRODUCTION!!!!)
@@ -41,7 +51,11 @@ fn generate_id() -> uuid::Uuid {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8081").await?;
     let clients: protocol_utils::fctp_client::Clients = Arc::new(Mutex::new(HashMap::new()));
-    set_id("b0ba4f3e-3d19-4f5f-bae2-ece5f6464702"); // SERVER ID WILL NOT BE HARD-CODED IN PRODUCTION, IT WILL BE LOADED FROM FILE!!!
+    set_id("00000000-0000-0000-0000-000000000000"); // SERVER ID WILL NOT BE HARD-CODED IN PRODUCTION, IT WILL BE LOADED FROM FILE!!!
+    let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
+    let rec_sec = StaticSecret::from(rec_sec_bytes);
+    let rec_pub = PublicKey::from(rec_pub_bytes);
+    set_cert(rec_pub, rec_sec);
     loop {
         let (socket, _) = listener.accept().await?;
         let clients = clients.clone();
@@ -51,29 +65,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Split the socket into reader and writer
         let (mut reader, writer) = socket.into_split();
 
-        let client_info = protocol_utils::fctp_client::ClientInfo {
+        let mut client_info = protocol_utils::fctp_client::ClientInfo {
             socket: Arc::new(Mutex::new(writer)),
             connected_at: std::time::Instant::now(),
+            conn_session_key: Key::<Aes256Gcm>::default(),
         };
 
         {
             let mut map = clients.lock().await;
-            map.insert(id_string.clone(), client_info);
+            map.insert(id_string.clone(), client_info.clone());
         }
 
         let id_clone = id_string.clone();
 
         tokio::spawn(async move {
             {
-                let _ = protocol_utils::fctp_operations::send_broadcast(
+                /*let _ = protocol_utils::fctp_operations::send_broadcast(
                     &clients,
                     &id_clone,
                     &format!("{} joined", &id_clone),
                 )
-                .await;
+                .await;*/
                 let mut map = clients.lock().await;
                 if let Some(client_info) = map.get_mut(&id_clone) {
                     let mut writer = client_info.socket.lock().await;
+                    println!(
+                        "{}",
+                        client_info.conn_session_key == Key::<Aes256Gcm>::default()
+                    );
+
+                    println!("{}", crypt::utils::base64_encode(get_cert_pub().as_bytes()));
+
+                    if client_info.conn_session_key == Key::<Aes256Gcm>::default() {
+                        let _ = writer
+                            .write_all(
+                                format!(
+                                    "{}\r\n\r\n",
+                                    crypt::utils::base64_encode(get_cert_pub().as_bytes())
+                                )
+                                .as_bytes(),
+                            )
+                            .await;
+                        println!("Sent public key to client: {}", id_clone);
+                    }
+                    /*
                     let _ = writer
                         .write_all(
                             fctp::encapsulate_to_fctp(900, get_id(), "id", &id_clone).as_bytes(),
@@ -93,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .as_bytes(),
                         )
-                        .await;
+                        .await;*/
                 }
             }
 
@@ -104,88 +139,140 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(n) => n,
                     Err(_) => break,
                 };
+                let mut writer = client_info.socket.lock().await;
 
                 // Humanize the message
                 if let Ok(msg) = std::str::from_utf8(&buf[..n]) {
-                    // TEMPORARY DEBUG
-                    println!("[D]\n{}", msg);
-                    if let Some(fctp_message) = fctp::decapsulate_fctp_message(msg) {
-                        if fctp_message.code == 200 {
-                            let to_id = fctp_message.to.trim();
-                            print!(
-                                "[Message received] <{}> {}\n",
-                                fctp_message.from, fctp_message.body
-                            );
-                            let mut map = clients.lock().await;
-                            if let Some(client_info) = map.get_mut(to_id) {
-                                fctp::send_fctp_message(
-                                    client_info,
-                                    200,
-                                    &id_clone,
-                                    &fctp_message.body.trim(),
-                                    &to_id,
-                                )
-                                .await;
+                    if client_info.conn_session_key == Key::<Aes256Gcm>::default() {
+                        match crypt::utils::base64_decode(&msg.trim()) {
+                            Ok(decoded) => {
+                                match asymmetric::decrypt(&get_cert_sec(), &decoded) {
+                                    Ok(decrypted) => {
+                                        println!("Received exc key from client: {}", id_clone);
+                                        // THIS IS EXCHANGE KEY!!!
+                                        let exchange_pubkey_bytes: [u8; 32] = decrypted
+                                            .as_slice()
+                                            .try_into()
+                                            .expect("Slice with incorrect length");
+                                        let exchange_pubkey =
+                                            PublicKey::from(exchange_pubkey_bytes);
+                                        client_info.conn_session_key = crypt::symmetric::keygen();
+                                        match asymmetric::encrypt(
+                                            &exchange_pubkey,
+                                            &client_info.conn_session_key,
+                                        ) {
+                                            Ok(encrypted) => {
+                                                println!(
+                                                    "Sending session key to client: {}",
+                                                    id_clone
+                                                );
+                                                let _ = writer
+                                                    .write_all(
+                                                        format!(
+                                                            "{}\r\n\r\n",
+                                                            crypt::utils::base64_encode(&encrypted)
+                                                        )
+                                                        .as_bytes(),
+                                                    )
+                                                    .await;
+                                                println!(
+                                                    "Sent session key to client: {}",
+                                                    id_clone
+                                                );
+                                            }
+                                            Err(e) => eprintln!("Encryption error: {}", e),
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Decryption error: {}", e),
+                                }
+                            }
+                            Err(e) => eprintln!("Decoding error: {}", e),
+                        }
+                    } else {
+                        // TEMPORARY DEBUG
+                        println!("[D]\n{}", msg);
+                        if let Some(fctp_message) = fctp::decapsulate_fctp_message(msg) {
+                            if fctp_message.code == 200 {
+                                let to_id = fctp_message.to.trim();
+                                print!(
+                                    "[Message received] <{}> {}\n",
+                                    fctp_message.from, fctp_message.body
+                                );
+                                let mut map = clients.lock().await;
+                                if let Some(client_info) = map.get_mut(to_id) {
+                                    fctp::send_fctp_message(
+                                        client_info,
+                                        200,
+                                        &id_clone,
+                                        &fctp_message.body.trim(),
+                                        &to_id,
+                                    )
+                                    .await;
+                                } else {
+                                    // Recipient not found, send error header to sender
+                                    if let Some(client_info) = map.get_mut(&id_clone) {
+                                        fctp::send_fctp_message(
+                                            client_info,
+                                            405,
+                                            get_id(),
+                                            "Not found",
+                                            &id_clone,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            } else if fctp_message.code == 10 {
+                                // Ping message, send pong back
+                                let mut map = clients.lock().await;
+                                if let Some(client_info) = map.get_mut(&id_clone) {
+                                    fctp::send_fctp_message(
+                                        client_info,
+                                        11,
+                                        get_id(),
+                                        "pong",
+                                        &id_clone,
+                                    )
+                                    .await;
+                                }
+                                continue;
+                            } else if fctp_message.code == 201 {
+                                // Commands
+                                let mut map = clients.lock().await;
+                                if let Some(client_info) = map.get_mut(&id_clone) {
+                                    fctp::command_handler(
+                                        fctp_message,
+                                        id_clone.clone(),
+                                        client_info,
+                                    )
+                                    .await;
+                                }
+                                continue;
                             } else {
-                                // Recipient not found, send error header to sender
+                                let mut map = clients.lock().await;
                                 if let Some(client_info) = map.get_mut(&id_clone) {
                                     fctp::send_fctp_message(
                                         client_info,
                                         405,
                                         get_id(),
-                                        "Not found",
+                                        "Unsupported header code, error!",
                                         &id_clone,
                                     )
                                     .await;
                                 }
                             }
-                        } else if fctp_message.code == 10 {
-                            // Ping message, send pong back
-                            let mut map = clients.lock().await;
-                            if let Some(client_info) = map.get_mut(&id_clone) {
-                                fctp::send_fctp_message(
-                                    client_info,
-                                    11,
-                                    get_id(),
-                                    "pong",
-                                    &id_clone,
-                                )
-                                .await;
-                            }
-                            continue;
-                        } else if fctp_message.code == 201 {
-                            // Commands
-                            let mut map = clients.lock().await;
-                            if let Some(client_info) = map.get_mut(&id_clone) {
-                                fctp::command_handler(fctp_message, id_clone.clone(), client_info)
-                                    .await;
-                            }
-                            continue;
                         } else {
+                            // Bad format, send error header to sender
                             let mut map = clients.lock().await;
                             if let Some(client_info) = map.get_mut(&id_clone) {
                                 fctp::send_fctp_message(
                                     client_info,
-                                    405,
+                                    505,
                                     get_id(),
-                                    "Unsupported header code, error!",
+                                    "Malformed header, error!",
                                     &id_clone,
                                 )
                                 .await;
                             }
-                        }
-                    } else {
-                        // Bad format, send error header to sender
-                        let mut map = clients.lock().await;
-                        if let Some(client_info) = map.get_mut(&id_clone) {
-                            fctp::send_fctp_message(
-                                client_info,
-                                505,
-                                get_id(),
-                                "Malformed header, error!",
-                                &id_clone,
-                            )
-                            .await;
                         }
                     }
                 }

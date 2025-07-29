@@ -29,7 +29,7 @@ fn derive_key(shared_secret: &[u8], salt: &[u8]) -> [u8; 32] {
 pub fn encrypt(
     recipient_pub: &PublicKey,
     plaintext: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let ephemeral = StaticSecret::random_from_rng(OsRng);
     let eph_pub = PublicKey::from(&ephemeral);
 
@@ -44,10 +44,11 @@ pub fn encrypt(
     let mut nonce = XNonce::default();
     OsRng.fill_bytes(nonce.as_mut());
 
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| Box::<dyn std::error::Error>::from(format!("Encrypt error: {:?}", e)))?;
-
+    let ciphertext = cipher.encrypt(&nonce, plaintext).map_err(
+        |e| -> Box<dyn std::error::Error + Send + Sync> {
+            format!("Encrypt error: {:?}", e).into()
+        },
+    )?;
     // Format:
     // [version (1) | eph_pub (32) | nonce (24) | salt (16) | ciphertext (...)]
     let mut msg = Vec::with_capacity(1 + 32 + 24 + 16 + ciphertext.len());
@@ -63,7 +64,7 @@ pub fn encrypt(
 pub fn decrypt(
     recipient_secret: &StaticSecret,
     message: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     // minimal length: 1 (ver) + 32 (eph_pub) + 24 (nonce) + 16 (salt) + 1 (ciphertext)
     if message.len() < 74 {
         return Err("Message too short".into());
@@ -87,9 +88,9 @@ pub fn decrypt(
     let key = derive_key(&shared, &salt);
     let cipher = XChaCha20Poly1305::new_from_slice(&key)?;
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| Box::<dyn std::error::Error>::from(format!("Decrypt error: {:?}", e)))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        Box::<dyn std::error::Error + Send + Sync>::from(format!("Decrypt error: {:?}", e))
+    })?;
 
     Ok(plaintext)
 }
