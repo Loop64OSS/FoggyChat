@@ -11,6 +11,8 @@ pub fn keygen() -> Key<Aes256Gcm> {
 }
 
 pub fn encrypt(data: &str, key: &Key<Aes256Gcm>) -> Result<String, aes_gcm::Error> {
+    // this implementation will always return a optimized string with nonce number
+
     let cipher = Aes256Gcm::new(key);
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bit
 
@@ -22,7 +24,10 @@ pub fn encrypt(data: &str, key: &Key<Aes256Gcm>) -> Result<String, aes_gcm::Erro
     let result = format!("{string_cipher_text}{DIVIDER}{string_nonce}");
     Ok(result)
 }
-pub fn decrypt(data: &str, key: &Key<Aes256Gcm>) -> Result<String, Box<dyn std::error::Error>> {
+pub fn decrypt(
+    data: &str,
+    key: &Key<Aes256Gcm>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let parts: Vec<&str> = data.split(DIVIDER).collect();
     if parts.len() != 2 {
         return Err("Invalid encrypted format".into());
