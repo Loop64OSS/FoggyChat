@@ -118,8 +118,6 @@ async fn main() {
                                 Err(e) => eprintln!("Decoding error: {}", e),
                             }
                         } else {
-                            println!("Raw base64 input: {:?}", &message.trim());
-
                             match crypt::utils::base64_decode(&message.trim()) {
                                 Ok(decoded) => {
                                     match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
@@ -142,24 +140,34 @@ async fn main() {
                                                         get_session_key().as_slice()
                                                     )
                                                 );
+                                                let packet = fctp::encapsulate_to_fctp(
+                                                    900,
+                                                    &fctp_me::get_id(),
+                                                    "id",
+                                                    &get_server_id(),
+                                                    get_session_key(),
+                                                );
+                                                let _ = tx.send(packet.into_bytes()).await;
                                             }
                                         }
                                         Err(_) => eprintln!("Decryption error"),
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("Decoding error aes {} / {}", e, &message.trim())
+                                    eprintln!(
+                                        "Session key decoding error  {} / {}",
+                                        e,
+                                        &message.trim()
+                                    )
                                 }
                             }
                         }
                     } else {
-                        println!("{}", get_session_key() == Key::<Aes256Gcm>::default());
-                        println!("{}", get_exchange_pub() == PublicKey::from([0u8; 32]));
-
                         fctp::process_fctp_stream(message.clone(), &last_pong_clone).await;
                     }
                     message.clear();
                 } else {
+                    message.clear();
                     message.push_str(&line);
                     message.push('\n');
                 }
@@ -207,6 +215,7 @@ async fn main() {
                         &fctp_me::get_id(),
                         command,
                         &get_server_id(),
+                        get_session_key(),
                     );
                     let _ = tx.send(packet.into_bytes()).await;
                 } else {
@@ -217,6 +226,7 @@ async fn main() {
                                 &fctp_me::get_id(),
                                 msg.trim(),
                                 id.trim(),
+                                get_session_key(),
                             );
                             let _ = tx.send(packet.into_bytes()).await;
                         }
@@ -230,19 +240,20 @@ async fn main() {
     }
 
     {
-        if get_session_key() != Key::<Aes256Gcm>::default() {
-            // Ping server every 2 seconds with code 10
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                loop {
+        // Ping server every 2 seconds with code 10
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if get_session_key() != Key::<Aes256Gcm>::default() {
                     sleep(Duration::from_secs(2)).await;
                     if tx
                         .send(
                             fctp::encapsulate_to_fctp(
                                 10,
-                                &fctp_me::get_id(), /* TODO: Replace me with user id later*/
+                                &fctp_me::get_id(),
                                 "ping",
                                 &get_server_id(),
+                                get_session_key(),
                             )
                             .into_bytes(),
                         )
@@ -252,8 +263,8 @@ async fn main() {
                         break;
                     }
                 }
-            });
-        }
+            }
+        });
     }
 
     loop {
@@ -323,9 +334,9 @@ mod tests {
         let body = "Hello, world!";
         let to = "user456";
 
-        let message = fctp::encapsulate_to_fctp(code, from, body, to);
-        let decoded =
-            fctp::decapsulate_fctp_message(&message).expect("Failed to parse FCTP message");
+        let message = fctp::encapsulate_to_fctp(code, from, body, to, Key::<Aes256Gcm>::default());
+        let decoded = fctp::decapsulate_fctp_message(&message, Key::<Aes256Gcm>::default())
+            .expect("Failed to parse FCTP message");
 
         assert_eq!(decoded.code, code);
         assert_eq!(decoded.from, from);
@@ -336,15 +347,17 @@ mod tests {
     #[test]
     fn test_fctp_decapsulation_invalid() {
         let bad_message = "This is not a valid FCTP message";
-        assert!(fctp::decapsulate_fctp_message(bad_message).is_none());
+        assert!(fctp::decapsulate_fctp_message(bad_message, Key::<Aes256Gcm>::default()).is_none());
 
         let bad_code =
             "FoggyChat Transfer Protocol 0.1\r\nabc\r\nFrom: a\r\nBody: b\r\nTo: c\r\n\r\n";
-        assert!(fctp::decapsulate_fctp_message(bad_code).is_none());
+        assert!(fctp::decapsulate_fctp_message(bad_code, Key::<Aes256Gcm>::default()).is_none());
 
         let missing_lines =
             "FoggyChat Transfer Protocol 0.1\r\n200\r\nFrom: user\r\nBody: test\r\n\r\n";
-        assert!(fctp::decapsulate_fctp_message(missing_lines).is_none());
+        assert!(
+            fctp::decapsulate_fctp_message(missing_lines, Key::<Aes256Gcm>::default()).is_none()
+        );
     }
     #[test]
     fn test_id_management() {

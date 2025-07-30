@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
+use aes_gcm::{Aes256Gcm, Key};
 use tokio::{sync::Mutex, time::Instant};
 
-use crate::protocol_utils;
+use crate::{
+    crypt::symmetric,
+    protocol_utils::{self, fctp_secure::get_session_key},
+};
 pub struct FctpMessage {
     pub code: i32,
     pub from: String,
@@ -13,37 +17,57 @@ pub struct FctpMessage {
 /*
     FCTP message processing
 */
-pub fn decapsulate_fctp_message(msg: &str) -> Option<FctpMessage> {
-    let mut lines = msg.lines();
-
-    if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
-        println!(
-            "Protocol header does not match expected format. Update your client or contact the administrator of the server."
-        );
-        return None;
+pub fn encapsulate_to_fctp(
+    code: i32,
+    from: &str,
+    body: &str,
+    to: &str,
+    session_key: Key<Aes256Gcm>,
+) -> String {
+    match symmetric::encrypt(
+        &format!(
+            "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n",
+            code, from, body, to
+        ),
+        &session_key,
+    ) {
+        Ok(encrypted) => format!("{}", encrypted),
+        Err(_) => {
+            println!("Failed to encrypt FCTP message");
+            String::new()
+        }
     }
-
-    let code = lines.next()?.trim().parse::<i32>().ok()?; // ABSOLUTELY REQUIRED, MUST BE A NUMBER IN INT FORMAT 32 BIT SIZE
-    let from = lines.next()?.strip_prefix("From: ")?.trim().to_string();
-    let body = lines.next()?.strip_prefix("Body: ")?.trim().to_string();
-    let to = lines.next()?.strip_prefix("To: ")?.trim().to_string(); // To: is optional, but we keep it for consistency (may be used to remind the client about its id). TL/DR: ignored
-
-    Some(FctpMessage {
-        code,
-        from,
-        body,
-        to,
-    })
 }
 
-pub fn encapsulate_to_fctp(code: i32, from: &str, body: &str, to: &str) -> String {
-    format!(
-        "FoggyChat Transfer Protocol 0.1\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n\n",
-        code, from, body, to
-    )
+pub fn decapsulate_fctp_message(msg: &str, session_key: Key<Aes256Gcm>) -> Option<FctpMessage> {
+    match symmetric::decrypt(&msg.trim(), &session_key) {
+        Ok(decrypted) => {
+            let mut lines = decrypted.lines();
+
+            if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
+                return None;
+            }
+            //TODO: base64 encoding
+            let code = lines.next()?.trim().parse::<i32>().ok()?; // ABSOLUTELY REQUIRED, MUST BE A NUMBER IN INT FORMAT 32 BIT SIZE
+            let from = lines.next()?.strip_prefix("From: ")?.trim().to_string();
+            let body = lines.next()?.strip_prefix("Body: ")?.trim().to_string();
+            let to = lines.next()?.strip_prefix("To: ")?.trim().to_string(); // To: is optional, but we keep it for consistency (may be used to remind the client about its id). TL/DR: ignored
+
+            Some(FctpMessage {
+                code,
+                from,
+                body,
+                to,
+            })
+        }
+        Err(_) => {
+            println!("Failed to decrypt FCTP message: {}", msg);
+            None
+        }
+    }
 }
 pub async fn process_fctp_stream(message: String, last_pong: &Arc<Mutex<Instant>>) {
-    if let Some(msg) = decapsulate_fctp_message(&message) {
+    if let Some(msg) = decapsulate_fctp_message(&message, get_session_key()) {
         //pool 4xx - client-side errors
         //pool 5xx - server-side errors
         //pool 2xx - message handling
