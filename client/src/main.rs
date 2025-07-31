@@ -1,4 +1,4 @@
-#![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
+#![allow(unused_imports)] //UTKANIE JEBANEGO RUST ANALYZERA
 mod crypt;
 mod protocol_utils;
 use aes_gcm::Aes256Gcm;
@@ -94,6 +94,11 @@ async fn main() {
                                     if let Ok(decoded_bytes) =
                                         TryInto::<[u8; 32]>::try_into(decoded)
                                     {
+                                        //TODO: implement tofu verification here
+                                        println!(
+                                            "Received public key: BLAKE3:{}",
+                                            crypt::utils::blake3_hash(&decoded_bytes)
+                                        );
                                         let cert_pub = PublicKey::from(decoded_bytes);
                                         let (rec_sec_bytes, rec_pub_bytes) =
                                             asymmetric::keypairgen();

@@ -1,7 +1,7 @@
 use base64::DecodeError;
 
-pub fn blake3_hash(input: &str) -> String {
-    let output = blake3::hash(input.as_bytes());
+pub fn blake3_hash(input: &[u8]) -> String {
+    let output = blake3::hash(input);
     output.to_hex().to_string()
 }
 pub fn base64_encode(input: &[u8]) -> String {
