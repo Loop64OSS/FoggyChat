@@ -1,4 +1,4 @@
-#![allow(unused_imports)] //ZAMKNIĘCIE RYJA RUST ANALYZER
+#![allow(unused_imports)] //UTKANIE JEBANEGO RUST ANALYZERA
 mod crypt;
 mod protocol_utils;
 use aes_gcm::Aes256Gcm;
