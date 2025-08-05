@@ -2,5 +2,5 @@
 members = [
     "server",
     "client",
-    "FoggyChatClient/src-tauri"
+    "client-gui/src-tauri"
 ]
