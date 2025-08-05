@@ -49,7 +49,7 @@ fn generate_id() -> uuid::Uuid {
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:8081").await?;
+    let listener = TcpListener::bind("0.0.0.0:8081").await?;
     let clients: protocol_utils::fctp_client::Clients = Arc::new(Mutex::new(HashMap::new()));
     set_id("00000000-0000-0000-0000-000000000000"); // SERVER ID WILL NOT BE HARD-CODED IN PRODUCTION, IT WILL BE LOADED FROM FILE!!!
     let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
