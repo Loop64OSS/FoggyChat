@@ -10,4 +10,5 @@ pub struct ClientInfo {
     pub socket: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     pub connected_at: std::time::Instant,
     pub conn_session_key: Key<Aes256Gcm>,
+    pub ext_session_username: String,
 }

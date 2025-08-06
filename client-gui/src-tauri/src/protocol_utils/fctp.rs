@@ -56,7 +56,7 @@ pub fn encapsulate_to_fctp(
     ) {
         Ok(encrypted) => format!("{}", encrypted),
         Err(_) => {
-            println!("Failed to encrypt FCTP message");
+            eprintln!("Failed to encrypt FCTP message");
             String::new()
         }
     }
@@ -84,7 +84,7 @@ pub fn decapsulate_fctp_message(msg: &str, session_key: Key<Aes256Gcm>) -> Optio
             })
         }
         Err(_) => {
-            println!("Failed to decrypt FCTP message: {}", msg);
+            eprintln!("Failed to decrypt FCTP message: {}", msg);
             None
         }
     }
@@ -114,9 +114,9 @@ pub async fn process_fctp_stream(
                     let id_clone = msg.to.clone();
                     let server_id_clone = msg.from.clone();
                     protocol_utils::fctp_me::set_id(&id_clone);
-                    set_server_id(&server_id_clone);
+                    set_server_id(&server_id_clone);                
                 }
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(Duration::from_millis(100));
                 pass_message(app , format!("DEBUG: ID: {}", protocol_utils::fctp_me::get_id()));
             }
             11 => {

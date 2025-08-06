@@ -3,5 +3,10 @@
 @import '@skeletonlabs/skeleton';
 @import '@skeletonlabs/skeleton/optional/presets';
 @import '@skeletonlabs/skeleton/themes/catppuccin';
-
+@import '@skeletonlabs/skeleton/themes/wintry';
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
+
+main {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+}

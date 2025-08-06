@@ -4,6 +4,8 @@ mod protocol_utils;
 use crate::crypt::asymmetric;
 use crate::crypt::symmetric;
 use crate::protocol_utils::fctp;
+use crate::protocol_utils::fctp::get_server_id;
+use crate::protocol_utils::fctp::pass_message;
 use crate::protocol_utils::fctp_me;
 use aes_gcm::Aes256Gcm;
 use aes_gcm::Key;
@@ -40,7 +42,7 @@ static TX: Lazy<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>> =
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .setup(|app| Ok(()))
+        .setup(|_app| Ok(()))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![send_message, request_connection])
         .run(tauri::generate_context!())
@@ -60,31 +62,54 @@ fn parse_input(input: &str) -> Result<(&str, &str), &'static str> {
     }
 }
 #[tauri::command]
-async fn send_message(line: &str) -> Result<String, String> {
-    match parse_input(&line) {
-        Ok((id, msg)) => {
-            let packet = fctp::encapsulate_to_fctp(
-                200,
-                &fctp_me::get_id(),
-                msg.trim(),
-                id.trim(),
-                get_session_key(),
-            );
-            if let Some(tx) = &*TX.lock().await {
-                tx.send(packet.into_bytes())
-                    .await
-                    .map_err(|e| format!("Failed to send packet: {}", e))?;
-            } else {
-                return Err("Channel sender not initialized".into());
-            }
-            Ok("ok".into())
+async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
+    if line.starts_with("/") {
+        let command = line.trim_start_matches('/').trim();
+        let packet = fctp::encapsulate_to_fctp(
+            201,
+            &fctp_me::get_id(),
+            command,
+            &get_server_id(),
+            get_session_key(),
+        );
+        if let Some(tx) = &*TX.lock().await {
+            tx.send(packet.into_bytes())
+                .await
+                .map_err(|e| format!("Failed to send packet: {}", e))?;
+        } else {
+            return Err("Channel sender not initialized".into());
         }
-        Err(e) => Err(format!("Parse error: {}", e)),
+        Ok("ok".into())
+    } else {
+        match parse_input(&line) {
+            Ok((id, msg)) => {
+                let packet = fctp::encapsulate_to_fctp(
+                    200,
+                    &fctp_me::get_id(),
+                    msg.trim(),
+                    id.trim(),
+                    get_session_key(),
+                );
+                if let Some(tx) = &*TX.lock().await {
+                    tx.send(packet.into_bytes())
+                        .await
+                        .map_err(|e| format!("Failed to send packet: {}", e))?;
+                } else {
+                    return Err("Channel sender not initialized".into());
+                }
+                Ok("ok".into())
+            }
+            Err(e) => {
+                pass_message(app, format!("Parse error {}", e));
+                Ok("ok".into())
+            }
+        }
     }
 }
 pub fn send_status(app: AppHandle, msg: String) {
     app.emit("status", msg).unwrap();
 }
+
 #[tauri::command]
 fn request_connection(address: &str, app: AppHandle) {
     tauri::async_runtime::spawn(init_connection(app.clone(), address.to_owned()));
