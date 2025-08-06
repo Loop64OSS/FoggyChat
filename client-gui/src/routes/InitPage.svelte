@@ -8,20 +8,19 @@
     import { Progress } from "@skeletonlabs/skeleton-svelte";
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
+
+    const appWebview = getCurrentWebviewWindow();
     let isWaiting = false;
     var serverAddress = "";
+    let unlisten: () => void;
 
     function handleConnect() {
         isWaiting = true;
         invoke("request_connection", { address: serverAddress });
     }
 
-    const appWebview = getCurrentWebviewWindow();
-    let unlisten: () => void;
-
     onMount(async () => {
         if (!unlisten) {
-            const appWebview = getCurrentWebviewWindow();
             unlisten = await listen("status", (event) => {
                 console.log("[status]", event.payload);
 
@@ -39,7 +38,6 @@
     onDestroy(() => {
         if (unlisten) {
             unlisten();
-            unlisten = null;
         }
     });
     async function exitApp() {
@@ -61,11 +59,16 @@
         <Progress value={null} />
     </div>
 {/if}
-<button class="btn text-red-200 fixed right-0" on:click={exitApp}
-    >Exit App</button
->
+
 <main class="flex h-screen justify-center mx-5">
+    <button class="btn text-red-200 fixed right-0" on:click={exitApp}
+        >Exit App</button
+    >
     <div class="m-auto">
+        <div class="flex items-center gap-4 mb-4">
+            <p class="text-2xl">FoggyChat</p>
+            <p class="text">DEV / 0.7</p>
+        </div>
         <form on:submit|preventDefault={handleConnect}>
             <div class="input-group grid-cols-[1fr_auto]">
                 <input
@@ -74,14 +77,15 @@
                     placeholder="Server Address"
                     bind:value={serverAddress}
                 />
-                <button class="ig-btn text-green-200" type="submit"
-                    >Connect</button
+                <button
+                    class="ig-btn text-green-200 preset-filled-dark"
+                    type="submit">Connect</button
                 >
             </div>
         </form>
         <p>
             This is development version. This version should not be publicly
-            available! DEV/0.7
+            available!
         </p>
     </div>
 </main>

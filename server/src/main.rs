@@ -19,6 +19,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::protocol_utils::fctp_client::ClientInfo;
+use crate::protocol_utils::fctp_client::Clients;
 use crate::protocol_utils::fctp_secure::get_cert_pub;
 use crate::protocol_utils::fctp_secure::get_cert_sec;
 use crate::protocol_utils::fctp_secure::set_cert;
@@ -41,12 +43,20 @@ pub fn get_id() -> &'static str {
         exit(1005);
     })
 }
+
+async fn find_id_by_nick(clients: &Clients, nick: &str) -> Option<String> {
+    let map = clients.lock().await;
+    map.iter()
+        .find(|(_, client)| client.ext_session_username == nick)
+        .map(|(id, _)| id.clone())
+}
 /**/
 
 fn generate_id() -> uuid::Uuid {
     let uuid = Uuid::new_v4();
     uuid
 }
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:8081").await?;
@@ -69,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket: Arc::new(Mutex::new(writer)),
             connected_at: std::time::Instant::now(),
             conn_session_key: Key::<Aes256Gcm>::default(),
+            ext_session_username: id_string.clone(),
         };
 
         {
@@ -120,7 +131,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Humanize the message
                 if let Ok(msg) = std::str::from_utf8(&buf[..n]) {
-                    // Zawsze pobieraj client_info z mapy
                     let mut map = clients.lock().await;
                     if let Some(client_info) = map.get_mut(&id_clone) {
                         let session_key = client_info.conn_session_key.clone();
@@ -182,30 +192,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(fctp_message) =
                                 fctp::decapsulate_fctp_message(msg, session_key)
                             {
-                                print!(
-                                    "[Message received] {} [{}] <{}> {}\n",
-                                    &id_clone,
-                                    fctp_message.code,
-                                    fctp_message.from,
-                                    fctp_message.body
-                                );
-
                                 drop(map);
 
                                 if fctp_message.code == 200 {
-                                    let to_id = fctp_message.to.trim();
+                                    let recipient = fctp_message.to.trim();
+
+                                    let recipient_id = if let Some(id) =
+                                        find_id_by_nick(&clients, recipient).await
+                                    {
+                                        id
+                                    } else {
+                                        recipient.to_string()
+                                    };
+                                    //find the nick
+                                    let sender_nick = {
+                                        let map = clients.lock().await;
+                                        map.get(&id_clone)
+                                            .map(|c| c.ext_session_username.clone())
+                                            .unwrap_or_else(|| id_clone.clone())
+                                    };
+
                                     let mut map = clients.lock().await;
-                                    if let Some(recipient_info) = map.get_mut(to_id) {
+                                    if let Some(recipient_info) = map.get_mut(&recipient_id) {
                                         fctp::send_fctp_message(
                                             recipient_info,
                                             200,
-                                            &id_clone,
-                                            &fctp_message.body.trim(),
-                                            &to_id,
+                                            &sender_nick,
+                                            &fctp_message.body,
+                                            &recipient_id,
                                         )
                                         .await;
                                     } else {
-                                        // Recipient not found
                                         if let Some(sender_info) = map.get_mut(&id_clone) {
                                             fctp::send_fctp_message(
                                                 sender_info,
@@ -257,15 +274,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     continue;
                                 } else if fctp_message.code == 201 {
-                                    // Commands
-                                    let mut map = clients.lock().await;
-                                    if let Some(client_info) = map.get_mut(&id_clone) {
+                                    let mut clients_guard = clients.lock().await;
+                                    if let Some(client_info) = clients_guard.get_mut(&id_clone) {
+                                        let mut client_info_clone = client_info.clone();
+                                        drop(clients_guard);
+
                                         fctp::command_handler(
                                             fctp_message,
-                                            id_clone.clone(),
-                                            client_info,
+                                            &mut id_clone.clone(),
+                                            &mut client_info_clone,
+                                            &clients,
                                         )
                                         .await;
+
+                                        let mut clients_guard = clients.lock().await;
+                                        if let Some(client_info) = clients_guard.get_mut(&id_clone)
+                                        {
+                                            client_info.ext_session_username =
+                                                client_info_clone.ext_session_username;
+                                        }
                                     }
                                     continue;
                                 } else {

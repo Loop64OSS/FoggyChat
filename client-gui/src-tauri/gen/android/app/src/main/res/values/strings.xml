@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">client-gui</string>
-    <string name="main_activity_title">client-gui</string>
+    <string name="app_name">FoggyChat</string>
+    <string name="main_activity_title">FoggyChat</string>
 </resources>

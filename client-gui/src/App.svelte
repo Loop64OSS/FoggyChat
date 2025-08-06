@@ -1,9 +1,8 @@
 <!-- App.svelte -->
-<script>
+<script lang="ts">
     import { Router, Link, Route } from "svelte-routing";
     import MessagesPage from "./routes/MessagePage.svelte";
     import InitPage from "./routes/InitPage.svelte";
-
     export let url = "";
 </script>
 

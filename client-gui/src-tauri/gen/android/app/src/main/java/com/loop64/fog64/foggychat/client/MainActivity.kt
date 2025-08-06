@@ -1,4 +1,4 @@
-package com.loop64.foggychat
+package com.loop64.fog64.foggychat.client
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
