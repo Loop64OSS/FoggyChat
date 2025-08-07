@@ -188,7 +188,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Err(e) => eprintln!("Decoding error: {}", e),
                             }
                         } else {
-                            println!("[D]\n{}", msg);
                             if let Some(fctp_message) =
                                 fctp::decapsulate_fctp_message(msg, session_key)
                             {
@@ -222,6 +221,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &recipient_id,
                                         )
                                         .await;
+                                        if let Some(sender_info) = map.get_mut(&id_clone) {
+                                            fctp::send_fctp_message(
+                                                sender_info,
+                                                200,
+                                                &sender_nick,
+                                                &fctp_message.body,
+                                                &id_clone,
+                                            )
+                                            .await;
+                                        }
                                     } else {
                                         if let Some(sender_info) = map.get_mut(&id_clone) {
                                             fctp::send_fctp_message(

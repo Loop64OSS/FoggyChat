@@ -8,11 +8,14 @@
     import { Progress } from "@skeletonlabs/skeleton-svelte";
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
+    import { X } from "@lucide/svelte";
 
     const appWebview = getCurrentWebviewWindow();
     let isWaiting = false;
     var serverAddress = "";
     let unlisten: () => void;
+    let FpVerified = true;
+    let FP = "";
 
     function handleConnect() {
         isWaiting = true;
@@ -21,15 +24,23 @@
 
     onMount(async () => {
         if (!unlisten) {
-            unlisten = await listen("status", (event) => {
+            unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
 
-                isWaiting = false;
-
-                if (event.payload !== "ok") {
-                    toaster.info({ title: event.payload });
-                } else {
+                let status: string = event.payload as string;
+                if (status === "OK::CON_ESTABLISHED" && FpVerified) {
+                    isWaiting = false;
                     navigate("/messages");
+                } else if (status.startsWith("USER::VERIFY_FP")) {
+                    FP = status.split("::")[2];
+                    FpVerified = false;
+                    while (!FpVerified) {
+                        await new Promise((resolve) => setTimeout(resolve, 10));
+                    }
+                    isWaiting = false;
+                } else if (status.startsWith("E::")) {
+                    isWaiting = false;
+                    toaster.info({ title: event.payload });
                 }
             });
         }
@@ -40,8 +51,8 @@
             unlisten();
         }
     });
-    async function exitApp() {
-        await exit(1);
+    function send_status(status: string) {
+        invoke("pass_status", { msg: status });
     }
 </script>
 
@@ -56,18 +67,35 @@
            max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-4"
     >
         <h2 class="text-2xl font-semibold">Connecting to {serverAddress}</h2>
+        {#if !FpVerified}
+            <h3
+                class="card preset-filled-surface-200-800 px-2 py-1 overflow-auto"
+            >
+                {FP}
+            </h3>
+            <button
+                class="btn preset-filled-primary-200-800"
+                on:click={(_) => {
+                    FpVerified = true;
+                    send_status("USER::FP_MATCH");
+                }}>Yes</button
+            >
+            <button
+                class="btn preset-filled-secondary-200-800"
+                on:click={(_) => {
+                    send_status("USER::FP_MISMATCH");
+                }}>No</button
+            >
+        {/if}
         <Progress value={null} />
     </div>
 {/if}
 
-<main class="flex h-screen justify-center mx-5">
-    <button class="btn text-red-200 fixed right-0" on:click={exitApp}
-        >Exit App</button
-    >
+<main class="flex justify-center h-screen mx-5">
     <div class="m-auto">
         <div class="flex items-center gap-4 mb-4">
             <p class="text-2xl">FoggyChat</p>
-            <p class="text">DEV / 0.7</p>
+            <p class="text">DEV / 0.8</p>
         </div>
         <form on:submit|preventDefault={handleConnect}>
             <div class="input-group grid-cols-[1fr_auto]">
