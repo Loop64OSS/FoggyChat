@@ -4,9 +4,18 @@
 @import '@skeletonlabs/skeleton/optional/presets';
 @import '@skeletonlabs/skeleton/themes/catppuccin';
 @import '@skeletonlabs/skeleton/themes/wintry';
+@import '@skeletonlabs/skeleton/themes/concord';
+@import '@skeletonlabs/skeleton/themes/rose';
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
 main {
+    height: 100dvh;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+}
+
+body {
+    user-select: none;
+    cursor: default;
+    overflow: hidden;
 }

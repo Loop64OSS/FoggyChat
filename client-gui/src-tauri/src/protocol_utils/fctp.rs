@@ -105,10 +105,10 @@ pub async fn process_fctp_stream(
         //pool 8xx - //TODO: encryption handshake
         //pool 9xx - //TODO: session information ex. logged in, id, etc.
         match msg.code {
-            200 => pass_message(app , format!("[Message received] <{}> {}", msg.from, msg.body)), //User-user direct message
-            201 => pass_message(app , format!("SERVER: {}", msg.body)), //From-server general direct message
-            405 => pass_message(app , format!("[!cl!] {}", msg.body)),  //Client-side error
-            505 => pass_message(app , format!("[!sv!] {}", msg.body)),  //Server-side error
+            200 => pass_message(app , format!("<{}> {}", msg.from, msg.body)), //User-user direct message
+            201 => pass_message(app , format!("|SERVER| {}", msg.body)), //From-server general direct message
+            405 => pass_message(app , format!("[!Client error!] {}", msg.body)),  //Client-side error
+            505 => pass_message(app , format!("[!Server error!] {}", msg.body)),  //Server-side error
             900 => {
                 if msg.body == "id" {
                     let id_clone = msg.to.clone();
@@ -116,8 +116,6 @@ pub async fn process_fctp_stream(
                     protocol_utils::fctp_me::set_id(&id_clone);
                     set_server_id(&server_id_clone);                
                 }
-                std::thread::sleep(Duration::from_millis(100));
-                pass_message(app , format!("DEBUG: ID: {}", protocol_utils::fctp_me::get_id()));
             }
             11 => {
                 let mut pong_time = last_pong.lock().await;

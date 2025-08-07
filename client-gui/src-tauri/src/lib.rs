@@ -16,6 +16,9 @@ use regex::Regex;
 use sha2::digest::generic_array::GenericArray;
 use std::clone;
 use std::process::exit;
+use std::string;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -37,14 +40,19 @@ use crate::protocol_utils::fctp_secure::set_exchange;
 use crate::protocol_utils::fctp_secure::set_session_key;
 use once_cell::sync::OnceCell;
 static TX: Lazy<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(None))); //Tauri app starter
+    Lazy::new(|| Arc::new(Mutex::new(None)));
+//Tauri app starter
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .setup(|_app| Ok(()))
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![send_message, request_connection])
+        .invoke_handler(tauri::generate_handler![
+            send_message,
+            request_connection,
+            pass_status
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -106,29 +114,42 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
         }
     }
 }
-pub fn send_status(app: AppHandle, msg: String) {
-    app.emit("status", msg).unwrap();
-}
 
 #[tauri::command]
 fn request_connection(address: &str, app: AppHandle) {
     tauri::async_runtime::spawn(init_connection(app.clone(), address.to_owned()));
 }
-
+#[tauri::command]
+async fn pass_status(msg: String) {
+    if msg == "USER::FP_MISMATCH" {
+        exit(1);
+    } else if msg == "USER::FP_MATCH" {
+        let packet = msg;
+        if let Some(tx) = &*TX.lock().await {
+            let _ = tx
+                .send(packet.into_bytes())
+                .await
+                .map_err(|e| format!("Failed to send packet: {}", e));
+        } else {
+            eprintln!("Channel sender not initialized");
+        }
+    }
+}
+pub fn send_status(app: AppHandle, msg: String) {
+    app.emit("status", msg).unwrap();
+}
 async fn init_connection(app: AppHandle, server_address: String) {
     match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(server_address)).await {
         Ok(Ok(stream)) => {
-            send_status(app.clone(), format!("ok"));
-
             stream_handler(app, stream).await;
         }
         Ok(Err(e)) => {
-            send_status(app, format!("Connection error: {}", e));
-            eprintln!("Connection error: {}", e);
+            send_status(app, format!("E::Connection error: {}", e));
+            eprintln!("E::Connection error: {}", e);
         }
         Err(timeout_err) => {
-            send_status(app, "Timeout occurred".to_string());
-            eprintln!("Timeout: {}", timeout_err);
+            send_status(app, "E::Timeout occurred".to_string());
+            eprintln!("E::Timeout: {}", timeout_err);
         }
     }
 }
@@ -138,6 +159,9 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
     let last_pong = Arc::new(tokio::sync::Mutex::new(Instant::now()));
     let last_pong_clone = last_pong.clone();
+
+    let fp_verified = Arc::new(AtomicBool::new(false));
+    let fp_verified_clone = Arc::clone(&fp_verified);
     TX.lock().await.replace(tx.clone());
     {
         let tx = tx.clone();
@@ -161,12 +185,20 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                     if let Ok(decoded_bytes) =
                                         TryInto::<[u8; 32]>::try_into(decoded)
                                     {
-                                        //TODO: implement tofu verification here
-                                        println!(
-                                            "Received public key: BLAKE3:{}",
-                                            crypt::utils::blake3_hash(&decoded_bytes)
-                                        );
                                         let cert_pub = PublicKey::from(decoded_bytes);
+                                        send_status(
+                                            app.clone(),
+                                            format!(
+                                                "USER::VERIFY_FP::{}",
+                                                crypt::utils::blake3_hash(&decoded_bytes)
+                                            ),
+                                        );
+                                        loop {
+                                            if fp_verified_clone.load(Ordering::Relaxed) {
+                                                break;
+                                            }
+                                            sleep(std::time::Duration::from_millis(500)).await;
+                                        }
                                         let (rec_sec_bytes, rec_pub_bytes) =
                                             asymmetric::keypairgen();
                                         let rec_sec = StaticSecret::from(rec_sec_bytes);
@@ -180,6 +212,10 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                                             .into(),
                                                     )
                                                     .await;
+                                                send_status(
+                                                    app.clone(),
+                                                    format!("OK::CON_ESTABLISHED"),
+                                                );
                                             }
                                             Err(e) => eprintln!("Encryption error: {}", e),
                                         }
@@ -249,30 +285,44 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
             exit(0)
         });
     }
-    tokio::spawn(async move {
-        //receive messages from async channel and send them to server - universal sender
-        let mut writer = writer;
-        while let Some(msg) = rx.recv().await {
-            if let Err(e) = writer.write_all(&msg).await {
-                eprintln!("[!Couldn't send the message!]: {:?}", e);
-                break;
-            }
-        }
-    });
+    {
+        let fp_verified_clone = fp_verified.clone();
 
-    let last_pong_clone = last_pong.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let elapsed = last_pong_clone.lock().await.elapsed();
-            if elapsed.as_millis() > 5000 {
-                println!(
-                    "server is not responding, last pong was sent {} ms ago",
-                    elapsed.as_millis()
-                );
+        tokio::spawn(async move {
+            //receive messages from async channel and send them to server - universal sender
+            let mut writer = writer;
+            while let Some(msg) = rx.recv().await {
+                //Jump Fingerprint match message from frontend
+                if msg == "USER::FP_MATCH".as_bytes() {
+                    fp_verified_clone.store(true, Ordering::Relaxed);
+                }
+                //Standard message push to server
+                if let Err(e) = writer.write_all(&msg).await {
+                    eprintln!("[!Couldn't send the message!]: {:?}", e);
+                    break;
+                }
             }
-        }
-    });
+        });
+    }
+    {
+        let last_pong_clone = last_pong.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let elapsed = last_pong_clone.lock().await.elapsed();
+                //if handshake is not established yet then ignore pings (pings only work if encryption is ensured)
+                if get_session_key() == Key::<Aes256Gcm>::default() {
+                    *last_pong.lock().await = Instant::now();
+                }
+                if elapsed.as_millis() > 5000 && get_session_key() != Key::<Aes256Gcm>::default() {
+                    println!(
+                        "server is not responding, last pong was sent {} ms ago",
+                        elapsed.as_millis()
+                    );
+                }
+            }
+        });
+    }
 
     {
         // Ping server every 2 seconds with code 10
