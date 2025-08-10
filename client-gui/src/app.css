@@ -9,12 +9,15 @@
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
 main {
-    height: 100dvh;
+    height: 100vh;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
 }
 
-body {
+body,
+html,
+#root {
+    overflow-y: auto;
     user-select: none;
     cursor: default;
     overflow: hidden;

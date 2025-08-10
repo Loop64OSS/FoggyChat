@@ -31,7 +31,7 @@
     });
 </script>
 
-<main class="h-dvh flex flex-col">
+<main class="flex flex-col">
     <div
         bind:this={messagesContainer}
         id="message-container"

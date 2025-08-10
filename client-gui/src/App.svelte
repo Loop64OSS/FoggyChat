@@ -3,6 +3,7 @@
     import { Router, Link, Route } from "svelte-routing";
     import MessagesPage from "./routes/MessagePage.svelte";
     import InitPage from "./routes/InitPage.svelte";
+    import { invoke } from "@tauri-apps/api/core";
     export let url = "";
 </script>
 
