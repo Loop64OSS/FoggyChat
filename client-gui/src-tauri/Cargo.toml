@@ -1,5 +1,5 @@
 [package]
-name = "FoggyChat"
+name = "foggychat-gui"
 version = "0.1.0"
 description = "A simple and secure direct message communicator."
 authors = ["FOG64", "Loop64"]
