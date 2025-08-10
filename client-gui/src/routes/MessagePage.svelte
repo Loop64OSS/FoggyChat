@@ -12,7 +12,9 @@
     let messagesContainer: HTMLDivElement;
 
     onMount(() => scrollToBottom(messagesContainer));
-
+    window.onbeforeunload = function () {
+        return;
+    };
     const scrollToBottom = async (node: HTMLDivElement) => {
         node.scroll({ top: node.scrollHeight, behavior: "smooth" });
     };

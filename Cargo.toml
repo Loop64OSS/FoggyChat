@@ -1,6 +1,7 @@
 [workspace]
+workspace.resolver = "3"
 members = [
     "server",
-    "client",
+    "client-legacy",
     "client-gui/src-tauri"
 ]
