@@ -14,6 +14,7 @@ main {
     padding-bottom: env(safe-area-inset-bottom);
 }
 
+#app,
 body,
 html,
 #root {
@@ -21,4 +22,10 @@ html,
     user-select: none;
     cursor: default;
     overflow: hidden;
+
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
 }
