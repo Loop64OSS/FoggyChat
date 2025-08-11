@@ -1,3 +1,4 @@
+#![warn(dead_code)] // Maybe in some time I will use this shit
 use crate::protocol_utils::fctp_client::Clients;
 
 pub async fn send_broadcast(
