@@ -1,46 +1,40 @@
-#![allow(unused_imports)] //UTKANIE JEBANEGO RUST ANALYZERA
+#![allow(unused_imports)]
 mod crypt;
 mod protocol_utils;
+
 use crate::crypt::asymmetric;
 use crate::crypt::symmetric;
 use crate::protocol_utils::fctp;
 use crate::protocol_utils::fctp::get_server_id;
-use crate::protocol_utils::fctp::pass_message;
+use crate::protocol_utils::fctp::ui_emit_fctp_message;
 use crate::protocol_utils::fctp_me;
-use aes_gcm::Aes256Gcm;
-use aes_gcm::Key;
-use aes_gcm::KeyInit;
+use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use sha2::digest::generic_array::GenericArray;
-use std::clone;
-use std::process::exit;
-use std::string;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::Duration;
-use tauri::AppHandle;
-use tauri::Emitter;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
-use tokio::time::Instant;
-use x25519_dalek::PublicKey;
-use x25519_dalek::StaticSecret;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, Instant};
+use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::protocol_utils::fctp_secure::get_exchange_pub;
-use crate::protocol_utils::fctp_secure::get_exchange_sec;
-use crate::protocol_utils::fctp_secure::get_session_key;
-use crate::protocol_utils::fctp_secure::set_exchange;
-use crate::protocol_utils::fctp_secure::set_session_key;
-use once_cell::sync::OnceCell;
+use crate::protocol_utils::fctp_secure::{
+    get_exchange_pub, get_exchange_sec, get_session_key, set_exchange, set_session_key,
+};
+
+const BUFFER_SIZE: usize = 8192;
+
+static TASKS: Lazy<Arc<Mutex<Vec<JoinHandle<()>>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 static TX: Lazy<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
+
 //Tauri app starter
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -52,21 +46,22 @@ pub fn run() {
         target_os = "netbsd",
     ))]
     std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
-        .setup(|_app| Ok(()))
         .plugin(tauri_plugin_opener::init())
+        .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
-            send_message,
-            request_connection,
-            pass_status
+            ui_command_send_fctp_message,
+            ui_command_request_connection,
+            ui_command_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-//
-//User input parser
+// User input parser
 fn parse_input(input: &str) -> Result<(&str, &str), &'static str> {
     let re = Regex::new(r"^([^:]+):([^:]+)$").unwrap();
     if let Some(caps) = re.captures(input) {
@@ -77,10 +72,11 @@ fn parse_input(input: &str) -> Result<(&str, &str), &'static str> {
         Err("Wrong input format, expected 'key:value'")
     }
 }
+
 #[tauri::command]
-async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
-    if line.starts_with("/") {
-        let command = line.trim_start_matches('/').trim();
+async fn ui_command_send_fctp_message(input: &str, app: AppHandle) -> Result<String, String> {
+    if input.starts_with("/") {
+        let command = input.trim_start_matches('/').trim();
         let packet = fctp::encapsulate_to_fctp(
             201,
             &fctp_me::get_id(),
@@ -88,8 +84,9 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
             &get_server_id(),
             get_session_key(),
         );
+
         if let Some(tx) = &*TX.lock().await {
-            tx.send(packet.into_bytes())
+            tx.send(packet)
                 .await
                 .map_err(|e| format!("Failed to send packet: {}", e))?;
         } else {
@@ -97,7 +94,7 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
         }
         Ok("ok".into())
     } else {
-        match parse_input(&line) {
+        match parse_input(&input) {
             Ok((id, msg)) => {
                 let packet = fctp::encapsulate_to_fctp(
                     200,
@@ -106,8 +103,9 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
                     id.trim(),
                     get_session_key(),
                 );
+
                 if let Some(tx) = &*TX.lock().await {
-                    tx.send(packet.into_bytes())
+                    tx.send(packet)
                         .await
                         .map_err(|e| format!("Failed to send packet: {}", e))?;
                 } else {
@@ -116,7 +114,7 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
                 Ok("ok".into())
             }
             Err(e) => {
-                pass_message(app, format!("Parse error {}", e));
+                ui_emit_fctp_message(&app, format!("Parse error: {}", e));
                 Ok("ok".into())
             }
         }
@@ -124,240 +122,298 @@ async fn send_message(line: &str, app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn request_connection(address: &str, app: AppHandle) {
+fn ui_command_request_connection(address: &str, app: AppHandle) {
     tauri::async_runtime::spawn(init_connection(app.clone(), address.to_owned()));
 }
+
 #[tauri::command]
-async fn pass_status(msg: String) {
-    if msg == "USER::FP_MISMATCH" {
-        exit(1);
-    } else if msg == "USER::FP_MATCH" {
-        let packet = msg;
+async fn ui_command_status(input: String) {
+    if input == "USER::FP_MISMATCH" {
+        std::process::exit(1);
+    } else if input == "USER::FP_MATCH" || input == "USER::DISCONNECT" {
         if let Some(tx) = &*TX.lock().await {
-            let _ = tx
-                .send(packet.into_bytes())
-                .await
-                .map_err(|e| format!("Failed to send packet: {}", e));
+            let _ = tx.send(input.into_bytes()).await;
         } else {
             eprintln!("Channel sender not initialized");
         }
     }
 }
-pub fn send_status(app: AppHandle, msg: String) {
-    app.emit("status", msg).unwrap();
+
+pub fn ui_emit_status(app: AppHandle, msg: String) {
+    if let Err(e) = app.emit("status", msg) {
+        eprintln!("Failed to emit status: {:?}", e);
+    }
 }
+
 async fn init_connection(app: AppHandle, server_address: String) {
     match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(server_address)).await {
         Ok(Ok(stream)) => {
             stream_handler(app, stream).await;
         }
         Ok(Err(e)) => {
-            send_status(app, format!("E::Connection error: {}", e));
+            ui_emit_status(app, format!("E::Connection error: {}", e));
             eprintln!("E::Connection error: {}", e);
         }
         Err(timeout_err) => {
-            send_status(app, "E::Timeout occurred".to_string());
+            ui_emit_status(app, "E::Timeout occurred".to_string());
             eprintln!("E::Timeout: {}", timeout_err);
         }
     }
 }
-async fn stream_handler(app: AppHandle, stream: TcpStream) {
-    let (reader, writer) = stream.into_split();
-    let reader = BufReader::new(reader);
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
-    let last_pong = Arc::new(tokio::sync::Mutex::new(Instant::now()));
-    let last_pong_clone = last_pong.clone();
 
-    let fp_verified = Arc::new(AtomicBool::new(false));
-    let fp_verified_clone = Arc::clone(&fp_verified);
-    TX.lock().await.replace(tx.clone());
-    {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            //receive messages from server and process them
-            let mut lines = reader.lines();
-            let mut message = String::new();
-            // Glue the lines together
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !message.ends_with("\r\n\r\n") {
-                    while message.ends_with('\n') || message.ends_with('\r') {
-                        message.pop();
+async fn abort_all_tasks() {
+    let mut tasks = TASKS.lock().await;
+    for task in tasks.drain(..) {
+        task.abort();
+    }
+}
+
+async fn handle_server_message(
+    data: &[u8],
+    app: &AppHandle,
+    tx: &mpsc::Sender<Vec<u8>>,
+    fp_verified: &Arc<AtomicBool>,
+    last_pong: &Arc<Mutex<Instant>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if get_session_key() == Key::<Aes256Gcm>::default() {
+        if get_exchange_pub() == PublicKey::from([0u8; 32]) {
+            let message_str = String::from_utf8_lossy(data).trim().to_string();
+            match crypt::utils::base64_decode(&message_str) {
+                Ok(decoded) => {
+                    if decoded.len() == 32 {
+                        let cert_pub = PublicKey::from(<[u8; 32]>::try_from(decoded.as_slice())?);
+                        ui_emit_status(
+                            app.clone(),
+                            format!("USER::VERIFY_FP::{}", crypt::utils::blake3_hash(&decoded)),
+                        );
+
+                        while !fp_verified.load(Ordering::Relaxed) {
+                            sleep(Duration::from_millis(100)).await;
+                        }
+
+                        let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
+                        let rec_sec = StaticSecret::from(rec_sec_bytes);
+                        let rec_pub = PublicKey::from(rec_pub_bytes);
+                        set_exchange(rec_pub, rec_sec);
+
+                        match asymmetric::encrypt(&cert_pub, rec_pub.as_bytes()) {
+                            Ok(encrypted) => {
+                                let encoded = crypt::utils::base64_encode(&encrypted);
+                                tx.send(format!("{}\r\n\r\n", encoded).into_bytes()).await?;
+                                ui_emit_status(app.clone(), "OK::CON_ESTABLISHED".to_string());
+                            }
+                            Err(e) => eprintln!("Encryption error: {}", e),
+                        }
                     }
-                    message.push_str("\r\n\r\n");
                 }
-                if line.trim().is_empty() && !message.is_empty() {
-                    if get_session_key() == Key::<Aes256Gcm>::default() {
-                        if get_exchange_pub() == PublicKey::from([0u8; 32]) {
-                            match crypt::utils::base64_decode(&message.trim()) {
-                                Ok(decoded) => {
-                                    if let Ok(decoded_bytes) =
-                                        TryInto::<[u8; 32]>::try_into(decoded)
-                                    {
-                                        let cert_pub = PublicKey::from(decoded_bytes);
-                                        send_status(
-                                            app.clone(),
-                                            format!(
-                                                "USER::VERIFY_FP::{}",
-                                                crypt::utils::blake3_hash(&decoded_bytes)
-                                            ),
-                                        );
-                                        loop {
-                                            if fp_verified_clone.load(Ordering::Relaxed) {
-                                                break;
-                                            }
-                                            sleep(std::time::Duration::from_millis(500)).await;
+                Err(e) => eprintln!("Decoding error: {}", e),
+            }
+        } else {
+            let message_str = String::from_utf8_lossy(data).trim().to_string();
+            match crypt::utils::base64_decode(&message_str) {
+                Ok(decoded) => match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
+                    Ok(decrypted) => {
+                        if decrypted.len() == 32 {
+                            let key_array: [u8; 32] = decrypted
+                                .try_into()
+                                .map_err(|e| format!("An Error Occurred: {:?}", e))?;
+                            let session_key = Key::<Aes256Gcm>::from_slice(&key_array).clone();
+                            set_session_key(session_key);
+
+                            println!(
+                                "Session key established: {}",
+                                crypt::utils::base64_encode(get_session_key().as_slice())
+                            );
+
+                            let packet = fctp::encapsulate_to_fctp(
+                                900,
+                                &fctp_me::get_id(),
+                                "id",
+                                &get_server_id(),
+                                get_session_key(),
+                            );
+                            tx.send(packet).await?;
+                        }
+                    }
+                    Err(e) => eprintln!("Session key decryption error: {:?}", e),
+                },
+                Err(e) => eprintln!("Session key decoding error: {}", e),
+            }
+        }
+    } else {
+        fctp::process_fctp_stream(app.clone(), data, last_pong).await;
+    }
+
+    Ok(())
+}
+
+async fn stream_handler(app: AppHandle, stream: TcpStream) {
+    let (mut reader, writer) = stream.into_split();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
+    let last_pong = Arc::new(Mutex::new(Instant::now()));
+    let last_pong_clone = last_pong.clone();
+    let fp_verified = Arc::new(AtomicBool::new(false));
+
+    TX.lock().await.replace(tx.clone());
+
+    {
+        let tx_clone = tx.clone();
+        let app_clone = app.clone();
+        let fp_verified_clone = fp_verified.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut buffer = [0u8; BUFFER_SIZE];
+            let mut message_buffer = Vec::new();
+            let mut expecting_length = None;
+
+            loop {
+                match reader.read(&mut buffer).await {
+                    Ok(0) => {
+                        println!("Server disconnected");
+                        break;
+                    }
+                    Ok(n) => {
+                        if get_session_key() == Key::<Aes256Gcm>::default() {
+                            let data = &buffer[..n];
+                            let text_data = String::from_utf8_lossy(data);
+
+                            if text_data.contains("\r\n\r\n") {
+                                for line in text_data.lines() {
+                                    if !line.trim().is_empty() {
+                                        if let Err(e) = handle_server_message(
+                                            line.trim().as_bytes(),
+                                            &app_clone,
+                                            &tx_clone,
+                                            &fp_verified_clone,
+                                            &last_pong_clone,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("Error handling handshake message: {}", e);
                                         }
-                                        let (rec_sec_bytes, rec_pub_bytes) =
-                                            asymmetric::keypairgen();
-                                        let rec_sec = StaticSecret::from(rec_sec_bytes);
-                                        let rec_pub = PublicKey::from(rec_pub_bytes);
-                                        set_exchange(rec_pub, rec_sec);
-                                        match asymmetric::encrypt(&cert_pub, rec_pub.as_bytes()) {
-                                            Ok(encrypted) => {
-                                                let _ = tx
-                                                    .send(
-                                                        crypt::utils::base64_encode(&encrypted)
-                                                            .into(),
-                                                    )
-                                                    .await;
-                                                send_status(
-                                                    app.clone(),
-                                                    format!("OK::CON_ESTABLISHED"),
-                                                );
-                                            }
-                                            Err(e) => eprintln!("Encryption error: {}", e),
-                                        }
-                                    } else {
-                                        eprintln!("Error: Key must be 32 bytes long");
+                                        break;
                                     }
                                 }
-                                Err(e) => eprintln!("Decoding error: {}", e),
                             }
                         } else {
-                            match crypt::utils::base64_decode(&message.trim()) {
-                                Ok(decoded) => {
-                                    match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
-                                        Ok(decrypted) => {
-                                            if decrypted.len() != 32 {
-                                                eprintln!("Session key must be exactly 32 bytes");
-                                            } else {
-                                                let key_array: &[u8; 32] = decrypted
-                                                    .as_slice()
-                                                    .try_into()
-                                                    .expect("Decrypted key is not 32 bytes");
+                            message_buffer.extend_from_slice(&buffer[..n]);
 
-                                                let session_key: Key<Aes256Gcm> =
-                                                    GenericArray::from_slice(key_array).clone();
-
-                                                set_session_key(session_key);
-                                                println!(
-                                                    "Session key set: {}",
-                                                    crypt::utils::base64_encode(
-                                                        get_session_key().as_slice()
-                                                    )
-                                                );
-                                                let packet = fctp::encapsulate_to_fctp(
-                                                    900,
-                                                    &fctp_me::get_id(),
-                                                    "id",
-                                                    &fctp::get_server_id(),
-                                                    get_session_key(),
-                                                );
-                                                let _ = tx.send(packet.into_bytes()).await;
-                                            }
-                                        }
-                                        Err(_) => eprintln!("Decryption error"),
-                                    }
+                            while message_buffer.len() >= 4 {
+                                if expecting_length.is_none() {
+                                    let length_bytes: [u8; 4] =
+                                        message_buffer[..4].try_into().unwrap();
+                                    let message_length = u32::from_be_bytes(length_bytes) as usize;
+                                    expecting_length = Some(message_length);
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "Session key decoding error  {} / {}",
-                                        e,
-                                        &message.trim()
-                                    )
+
+                                if let Some(msg_len) = expecting_length {
+                                    let total_length = 4 + msg_len + 12; // length + message + nonce
+
+                                    if message_buffer.len() >= total_length {
+                                        let message_data = message_buffer
+                                            .drain(..total_length)
+                                            .collect::<Vec<u8>>();
+                                        expecting_length = None;
+
+                                        if let Err(e) = handle_server_message(
+                                            &message_data,
+                                            &app_clone,
+                                            &tx_clone,
+                                            &fp_verified_clone,
+                                            &last_pong_clone,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("Error handling encrypted message: {}", e);
+                                        }
+                                    } else {
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    } else {
-                        fctp::process_fctp_stream(app.clone(), message.clone(), &last_pong_clone)
-                            .await;
                     }
-                    message.clear();
-                } else {
-                    message.clear();
-                    message.push_str(&line);
-                    message.push('\n');
+                    Err(e) => {
+                        eprintln!("Error reading from server: {}", e);
+                        break;
+                    }
                 }
             }
-            println!("CON CLOSED - Disconnected");
-            exit(0)
+
+            println!("Connection closed - Disconnected");
+            std::process::exit(0);
         });
+        TASKS.lock().await.push(handle);
     }
+
     {
         let fp_verified_clone = fp_verified.clone();
 
-        tokio::spawn(async move {
-            //receive messages from async channel and send them to server - universal sender
+        let handle = tokio::spawn(async move {
             let mut writer = writer;
             while let Some(msg) = rx.recv().await {
-                //Jump Fingerprint match message from frontend
                 if msg == "USER::FP_MATCH".as_bytes() {
                     fp_verified_clone.store(true, Ordering::Relaxed);
+                    continue;
+                } else if msg == "USER::DISCONNECT".as_bytes() {
+                    set_session_key(Key::<Aes256Gcm>::default());
+                    set_exchange(PublicKey::from([0u8; 32]), StaticSecret::from([0u8; 32]));
+                    *TX.lock().await = None;
+                    abort_all_tasks().await;
+                    return;
                 }
-                //Standard message push to server
+
                 if let Err(e) = writer.write_all(&msg).await {
-                    eprintln!("[!Couldn't send the message!]: {:?}", e);
+                    eprintln!("Failed to send message: {:?}", e);
                     break;
                 }
             }
         });
+        TASKS.lock().await.push(handle);
     }
+
     {
         let last_pong_clone = last_pong.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                sleep(Duration::from_secs(3)).await;
                 let elapsed = last_pong_clone.lock().await.elapsed();
-                //if handshake is not established yet then ignore pings (pings only work if encryption is ensured)
+
                 if get_session_key() == Key::<Aes256Gcm>::default() {
-                    *last_pong.lock().await = Instant::now();
-                }
-                if elapsed.as_millis() > 5000 && get_session_key() != Key::<Aes256Gcm>::default() {
+                    *last_pong_clone.lock().await = Instant::now();
+                } else if elapsed.as_millis() > 10000 {
                     println!(
-                        "server is not responding, last pong was sent {} ms ago",
+                        "Server not responding, last pong: {} ms ago",
                         elapsed.as_millis()
                     );
                 }
             }
         });
+        TASKS.lock().await.push(handle);
     }
 
     {
-        // Ping server every 2 seconds with code 10
-        let tx = tx.clone();
-        tokio::spawn(async move {
+        let tx_clone = tx.clone();
+        let handle = tokio::spawn(async move {
             loop {
+                sleep(Duration::from_secs(5)).await;
+
                 if get_session_key() != Key::<Aes256Gcm>::default() {
-                    sleep(Duration::from_secs(2)).await;
-                    if tx
-                        .send(
-                            fctp::encapsulate_to_fctp(
-                                10,
-                                &fctp_me::get_id(),
-                                "ping",
-                                &fctp::get_server_id(),
-                                get_session_key(),
-                            )
-                            .into_bytes(),
-                        )
-                        .await
-                        .is_err()
-                    {
+                    let ping_packet = fctp::encapsulate_to_fctp(
+                        10,
+                        &fctp_me::get_id(),
+                        "ping",
+                        &get_server_id(),
+                        get_session_key(),
+                    );
+
+                    if tx_clone.send(ping_packet).await.is_err() {
                         break;
                     }
                 }
             }
         });
+        TASKS.lock().await.push(handle);
     }
 
     loop {
@@ -367,46 +423,54 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use x25519_dalek::{PublicKey, StaticSecret};
 
-    use super::*;
-
     #[test]
-    fn symmetric() {
+    fn test_symmetric_encryption() {
         let key = symmetric::keygen();
 
         match symmetric::encrypt("test", &key) {
             Ok(encrypted) => {
                 println!("Encrypted: {}", encrypted);
-
                 match symmetric::decrypt(&encrypted, &key) {
-                    Ok(decrypted) => println!("Decrypted: {}", decrypted),
-                    Err(e) => eprintln!("Decryption error: {}", e),
+                    Ok(decrypted) => {
+                        println!("Decrypted: {}", decrypted);
+                        assert_eq!(decrypted, "test");
+                    }
+                    Err(e) => panic!("Decryption error: {}", e),
                 }
             }
-            Err(e) => eprintln!("Encryption error: {}", e),
+            Err(e) => panic!("Encryption error: {}", e),
         }
     }
+
     #[test]
-    fn asymmetric() {
+    fn test_asymmetric_encryption() {
         let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
         let rec_sec = StaticSecret::from(rec_sec_bytes);
         let rec_pub = PublicKey::from(rec_pub_bytes);
+
         match asymmetric::encrypt(&rec_pub, "test".as_bytes()) {
             Ok(encrypted) => match asymmetric::decrypt(&rec_sec, &encrypted) {
-                Ok(decrypted) => println!("Decrypted: {}", String::from_utf8_lossy(&decrypted)),
-                Err(e) => eprintln!("Decryption error: {}", e),
+                Ok(decrypted) => {
+                    let result = String::from_utf8_lossy(&decrypted);
+                    println!("Decrypted: {}", result);
+                    assert_eq!(result, "test");
+                }
+                Err(e) => panic!("Decryption error: {}", e),
             },
-            Err(e) => eprintln!("Encryption error: {}", e),
+            Err(e) => panic!("Encryption error: {}", e),
         }
     }
+
     #[test]
-    fn regex_userinput_parser() {
-        let input = "user:input";
+    fn test_regex_userinput_parser() {
+        let input = "user:hello world";
         match parse_input(input) {
             Ok((left, right)) => {
                 assert_eq!(left, "user");
-                assert_eq!(right, "input");
+                assert_eq!(right, "hello world");
             }
             Err(e) => panic!("Parsing failed: {}", e),
         }
@@ -414,22 +478,49 @@ mod tests {
         let invalid_input = "invalid_input";
         assert!(parse_input(invalid_input).is_err());
     }
+
     #[test]
     fn test_parse_input_edge_cases() {
         assert!(parse_input("a:b:c").is_err());
         assert!(parse_input("").is_err());
         assert!(parse_input(" : ").is_ok());
+
+        assert!(parse_input("user:message").is_ok());
     }
+
     #[test]
-    fn test_fctp_encapsulation_and_decapsulation() {
+    fn test_fctp_binary_roundtrip() {
         let code = 200;
         let from = "user123";
         let body = "Hello, world!";
         let to = "user456";
 
-        let message = fctp::encapsulate_to_fctp(code, from, body, to, Key::<Aes256Gcm>::default());
-        let decoded = fctp::decapsulate_fctp_message(&message, Key::<Aes256Gcm>::default())
-            .expect("Failed to parse FCTP message");
+        let key = symmetric::keygen();
+        let message = fctp::encapsulate_to_fctp(code, from, body, to, key);
+
+        assert!(!message.is_empty());
+
+        let decoded =
+            fctp::decapsulate_fctp_message(&message, key).expect("Failed to parse FCTP message");
+
+        assert_eq!(decoded.code, code);
+        assert_eq!(decoded.from, from);
+        assert_eq!(decoded.body, body);
+        assert_eq!(decoded.to, to);
+    }
+
+    #[test]
+    fn test_fctp_unencrypted_during_handshake() {
+        let code = 900;
+        let from = "server";
+        let body = "id";
+        let to = "client";
+
+        let default_key = Key::<Aes256Gcm>::default();
+        let message = fctp::encapsulate_to_fctp(code, from, body, to, default_key);
+
+        let decoded = fctp::decapsulate_fctp_message(&message, default_key)
+            .expect("Failed to parse unencrypted FCTP message");
 
         assert_eq!(decoded.code, code);
         assert_eq!(decoded.from, from);
@@ -439,25 +530,24 @@ mod tests {
 
     #[test]
     fn test_fctp_decapsulation_invalid() {
-        let bad_message = "This is not a valid FCTP message";
-        assert!(fctp::decapsulate_fctp_message(bad_message, Key::<Aes256Gcm>::default()).is_none());
+        let real_key = symmetric::keygen();
 
-        let bad_code =
-            "FoggyChat Transfer Protocol 0.1\r\nabc\r\nFrom: a\r\nBody: b\r\nTo: c\r\n\r\n";
-        assert!(fctp::decapsulate_fctp_message(bad_code, Key::<Aes256Gcm>::default()).is_none());
+        let bad_message = b"This is not a valid FCTP message";
+        assert!(fctp::decapsulate_fctp_message(bad_message, real_key).is_none());
 
-        let missing_lines =
-            "FoggyChat Transfer Protocol 0.1\r\n200\r\nFrom: user\r\nBody: test\r\n\r\n";
-        assert!(
-            fctp::decapsulate_fctp_message(missing_lines, Key::<Aes256Gcm>::default()).is_none()
-        );
+        let empty_message = b"";
+        assert!(fctp::decapsulate_fctp_message(empty_message, real_key).is_none());
+
+        let bad_binary = b"invalid binary data that cannot be decrypted";
+        assert!(fctp::decapsulate_fctp_message(bad_binary, real_key).is_none());
     }
+
     #[test]
     fn test_id_management() {
-        fctp_me::set_id("test_id");
-        assert_eq!(fctp_me::get_id(), "test_id");
+        fctp_me::set_id("test_client_id");
+        assert_eq!(fctp_me::get_id(), "test_client_id");
 
-        fctp::set_server_id("srv_id");
-        assert_eq!(fctp::get_server_id(), "srv_id");
+        fctp::set_server_id("test_server_id");
+        assert_eq!(fctp::get_server_id(), "test_server_id");
     }
 }
