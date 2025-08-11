@@ -1,25 +1,20 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
-    import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-    import { exit } from "@tauri-apps/plugin-process";
     import { navigate } from "svelte-routing";
     import { Toaster } from "@skeletonlabs/skeleton-svelte";
     import { toaster } from "../lib/toaster-svelte";
     import { Progress } from "@skeletonlabs/skeleton-svelte";
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
-    import { X } from "@lucide/svelte";
-
-    const appWebview = getCurrentWebviewWindow();
+    import { serverAddress } from "../lib/store.js";
     let isWaiting = false;
-    var serverAddress = "";
     let unlisten: () => void;
     let FpVerified = true;
     let FP = "";
 
     function handleConnect() {
         isWaiting = true;
-        invoke("request_connection", { address: serverAddress });
+        invoke("ui_command_request_connection", { address: $serverAddress });
     }
 
     onMount(async () => {
@@ -39,6 +34,7 @@
                     }
                     isWaiting = false;
                 } else if (status.startsWith("E::")) {
+                    status.replace("E::", "");
                     isWaiting = false;
                     toaster.info({ title: event.payload });
                 }
@@ -52,7 +48,7 @@
         }
     });
     function send_status(status: string) {
-        invoke("pass_status", { msg: status });
+        invoke("ui_command_status", { input: status });
     }
 </script>
 
@@ -66,7 +62,7 @@
            z-50 body-background-color dark:body-background-color-dark text-inherit
            max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-4"
     >
-        <h2 class="text-2xl font-semibold">Connecting to {serverAddress}</h2>
+        <h2 class="text-2xl font-semibold">Connecting to {$serverAddress}</h2>
         {#if !FpVerified}
             <h3
                 class="card preset-filled-surface-200-800 px-2 py-1 overflow-auto"
@@ -91,11 +87,11 @@
     </div>
 {/if}
 
-<main class="flex justify-center h-screen mx-5">
+<main class="flex flex-col justify-center mx-5">
     <div class="m-auto">
         <div class="flex items-center gap-4 mb-4">
             <p class="text-2xl">FoggyChat</p>
-            <p class="text">DEV / 0.8</p>
+            <p class="text">DEV/0.9</p>
         </div>
         <form on:submit|preventDefault={handleConnect}>
             <div class="input-group grid-cols-[1fr_auto]">
@@ -103,7 +99,7 @@
                     class="ig-input"
                     type="text"
                     placeholder="Server Address"
-                    bind:value={serverAddress}
+                    bind:value={$serverAddress}
                 />
                 <button
                     class="ig-btn text-green-200 preset-filled-dark"
@@ -116,5 +112,6 @@
             available!
         </p>
     </div>
+    <p>© Loop64 / FOG64</p>
 </main>
 <Toaster {toaster} />
