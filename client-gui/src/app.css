@@ -8,10 +8,13 @@
 @import '@skeletonlabs/skeleton/themes/rose';
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
-main {
-    height: 100vh;
-    padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
+
+* {
+    -webkit-tap-highlight-color: transparent;
+}
+
+*:focus {
+    box-shadow: none !important;
 }
 
 #app,
@@ -28,4 +31,10 @@ html,
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-text-size-adjust: 100%;
+}
+
+main {
+    height: 100vh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
 }

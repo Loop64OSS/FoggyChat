@@ -7,6 +7,12 @@
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
     import { serverAddress } from "../lib/store.js";
+    import {
+        isPermissionGranted,
+        requestPermission,
+        sendNotification,
+    } from "@tauri-apps/plugin-notification";
+    import { Check, LogIn, X } from "@lucide/svelte";
     let isWaiting = false;
     let unlisten: () => void;
     let FpVerified = true;
@@ -16,8 +22,22 @@
         isWaiting = true;
         invoke("ui_command_request_connection", { address: $serverAddress });
     }
+    function sendStatus(status: string) {
+        invoke("ui_command_status", { input: status });
+    }
+    async function requestPermissions() {
+        // Do you have permission to send a notification?
+        let permissionGranted = await isPermissionGranted();
 
+        // If not we need to request it
+        if (!permissionGranted) {
+            const permission = await requestPermission();
+            permissionGranted = permission === "granted";
+        }
+    }
     onMount(async () => {
+        requestPermissions();
+
         if (!unlisten) {
             unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
@@ -34,9 +54,7 @@
                     }
                     isWaiting = false;
                 } else if (status.startsWith("E::")) {
-                    status.replace("E::", "");
                     isWaiting = false;
-                    toaster.info({ title: event.payload });
                 }
             });
         }
@@ -47,9 +65,6 @@
             unlisten();
         }
     });
-    function send_status(status: string) {
-        invoke("ui_command_status", { input: status });
-    }
 </script>
 
 {#if isWaiting}
@@ -58,60 +73,103 @@
 
     <!-- Modal -->
     <div
-        class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+        class="fixed top-1/2 left-1/2
            z-50 body-background-color dark:body-background-color-dark text-inherit
-           max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-4"
+           max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-2 animate-fadeIn"
     >
-        <h2 class="text-2xl font-semibold">Connecting to {$serverAddress}</h2>
-        {#if !FpVerified}
-            <h3
-                class="card preset-filled-surface-200-800 px-2 py-1 overflow-auto"
-            >
-                {FP}
-            </h3>
-            <button
-                class="btn preset-filled-primary-200-800"
-                on:click={(_) => {
-                    FpVerified = true;
-                    send_status("USER::FP_MATCH");
-                }}>Yes</button
-            >
-            <button
-                class="btn preset-filled-secondary-200-800"
-                on:click={(_) => {
-                    send_status("USER::FP_MISMATCH");
-                }}>No</button
-            >
+        <header class="mb-4">
+            <h2 class="text-2xl font-semibold">
+                Connecting to {$serverAddress}
+            </h2>
+            <p>
+                Please verify the fingerprint to ensure the key wasn’t spoofed:
+            </p>
+        </header>
+        {#if FpVerified}
+            <div class="card preset-outlined-surface-200-800 p-2">
+                <Progress value={null} />
+            </div>
         {/if}
-        <Progress value={null} />
+        {#if !FpVerified}
+            <div class="flex gap-1 items-center">
+                <p>BLAKE3</p>
+                <p
+                    class="card preset-outlined-surface-200-800 px-2 py-1 overflow-auto"
+                >
+                    {FP}
+                </p>
+            </div>
+            <footer class="pt-4 flex justify-end gap-3">
+                <nav class="btn-group preset-outlined-surface-200-800 p-2">
+                    <button
+                        class="btn preset-filled-primary-500 hover:scale-105 active:scale-95 transition-transform"
+                        on:click={(_) => {
+                            isWaiting = false;
+                            FpVerified = true;
+                            sendStatus("USER::FP_MATCH");
+                        }}><Check size={18} /> Yes</button
+                    >
+                    <button
+                        class="btn preset-outlined-primary-500 hover:scale-105 active:scale-95 transition-transform"
+                        on:click={(_) => {
+                            isWaiting = false;
+                            FpVerified = true;
+                            sendStatus("USER::FP_MISMATCH");
+                        }}><X size={18} /> No</button
+                    >
+                </nav>
+            </footer>
+        {/if}
     </div>
 {/if}
 
-<main class="flex flex-col justify-center mx-5">
+<main class="flex flex-col justify-center">
     <div class="m-auto">
-        <div class="flex items-center gap-4 mb-4">
-            <p class="text-2xl">FoggyChat</p>
-            <p class="text">DEV/0.9</p>
-        </div>
-        <form on:submit|preventDefault={handleConnect}>
-            <div class="input-group grid-cols-[1fr_auto]">
-                <input
-                    class="ig-input"
-                    type="text"
-                    placeholder="Server Address"
-                    bind:value={$serverAddress}
-                />
-                <button
-                    class="ig-btn text-green-200 preset-filled-dark"
-                    type="submit">Connect</button
-                >
+        <div class=" mx-2">
+            <div class="flex items-center gap-4 mb-4">
+                <p class="text-2xl">FoggyChat</p>
+                <p class="text">DEV/1</p>
             </div>
-        </form>
-        <p>
-            This is development version. This version should not be publicly
-            available!
-        </p>
+            <form on:submit|preventDefault={handleConnect}>
+                <div class="grid grid-cols-[1fr_auto] gap-2">
+                    <input
+                        class="input rounded-lg focus:ring-2 focus:ring-primary-500"
+                        id="msginput"
+                        type="text"
+                        placeholder="Server address"
+                        bind:value={$serverAddress}
+                        required
+                    />
+
+                    <button
+                        class="btn px-3 preset-filled-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
+                        type="submit"
+                    >
+                        Connect
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
-    <p>© Loop64 / FOG64</p>
+    <div class="m-2">
+        <p>This is a development version. It should not be shared.</p>
+        <p>© Loop64 / FOG64</p>
+    </div>
 </main>
 <Toaster {toaster} />
+
+<style>
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translate(-50%, -40%);
+        }
+        to {
+            opacity: 1;
+            transform: translate(-50%, -50%);
+        }
+    }
+    .animate-fadeIn {
+        animation: fadeIn 0.3s ease forwards;
+    }
+</style>
