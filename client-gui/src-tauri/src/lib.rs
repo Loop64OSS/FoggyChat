@@ -61,22 +61,10 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-// User input parser
-fn parse_input(input: &str) -> Result<(&str, &str), &'static str> {
-    let re = Regex::new(r"^([^:]+):([^:]+)$").unwrap();
-    if let Some(caps) = re.captures(input) {
-        let left = caps.get(1).unwrap().as_str();
-        let right = caps.get(2).unwrap().as_str();
-        Ok((left, right))
-    } else {
-        Err("Wrong input format, expected 'key:value'")
-    }
-}
-
 #[tauri::command]
-async fn ui_command_send_fctp_message(input: &str, app: AppHandle) -> Result<String, String> {
-    if input.starts_with("/") {
-        let command = input.trim_start_matches('/').trim();
+async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<String, String> {
+    if message.starts_with("/") {
+        let command = message.trim_start_matches('/').trim();
         let packet = fctp::encapsulate_to_fctp(
             201,
             &fctp_me::get_id(),
@@ -94,30 +82,22 @@ async fn ui_command_send_fctp_message(input: &str, app: AppHandle) -> Result<Str
         }
         Ok("ok".into())
     } else {
-        match parse_input(&input) {
-            Ok((id, msg)) => {
-                let packet = fctp::encapsulate_to_fctp(
-                    200,
-                    &fctp_me::get_id(),
-                    msg.trim(),
-                    id.trim(),
-                    get_session_key(),
-                );
+        let packet = fctp::encapsulate_to_fctp(
+            200,
+            &fctp_me::get_id(),
+            message.trim(),
+            recipient.trim(),
+            get_session_key(),
+        );
 
-                if let Some(tx) = &*TX.lock().await {
-                    tx.send(packet)
-                        .await
-                        .map_err(|e| format!("Failed to send packet: {}", e))?;
-                } else {
-                    return Err("Channel sender not initialized".into());
-                }
-                Ok("ok".into())
-            }
-            Err(e) => {
-                ui_emit_fctp_message(&app, format!("Parse error: {}", e));
-                Ok("ok".into())
-            }
+        if let Some(tx) = &*TX.lock().await {
+            tx.send(packet)
+                .await
+                .map_err(|e| format!("Failed to send packet: {}", e))?;
+        } else {
+            return Err("Channel sender not initialized".into());
         }
+        Ok("ok".into())
     }
 }
 
@@ -128,9 +108,7 @@ fn ui_command_request_connection(address: &str, app: AppHandle) {
 
 #[tauri::command]
 async fn ui_command_status(input: String) {
-    if input == "USER::FP_MISMATCH" {
-        std::process::exit(1);
-    } else if input == "USER::FP_MATCH" || input == "USER::DISCONNECT" {
+    if input == "USER::FP_MATCH" || input == "USER::DISCONNECT" || input == "USER::FP_MISMATCH" {
         if let Some(tx) = &*TX.lock().await {
             let _ = tx.send(input.into_bytes()).await;
         } else {
@@ -339,9 +317,11 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                     }
                 }
             }
-
-            println!("Connection closed - Disconnected");
-            std::process::exit(0);
+            if let Some(tx) = &*TX.lock().await {
+                let _ = tx.send("USER::DISCONNECT".as_bytes().to_vec()).await;
+            } else {
+                eprintln!("Channel sender not initialized");
+            }
         });
         TASKS.lock().await.push(handle);
     }
@@ -355,11 +335,14 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                 if msg == "USER::FP_MATCH".as_bytes() {
                     fp_verified_clone.store(true, Ordering::Relaxed);
                     continue;
-                } else if msg == "USER::DISCONNECT".as_bytes() {
+                } else if msg == "USER::DISCONNECT".as_bytes()
+                    || msg == "USER::FP_MISMATCH".as_bytes()
+                {
                     set_session_key(Key::<Aes256Gcm>::default());
                     set_exchange(PublicKey::from([0u8; 32]), StaticSecret::from([0u8; 32]));
                     *TX.lock().await = None;
                     abort_all_tasks().await;
+                    ui_emit_status(app, format!("USER::DISCONNECT"));
                     return;
                 }
 
@@ -462,30 +445,6 @@ mod tests {
             },
             Err(e) => panic!("Encryption error: {}", e),
         }
-    }
-
-    #[test]
-    fn test_regex_userinput_parser() {
-        let input = "user:hello world";
-        match parse_input(input) {
-            Ok((left, right)) => {
-                assert_eq!(left, "user");
-                assert_eq!(right, "hello world");
-            }
-            Err(e) => panic!("Parsing failed: {}", e),
-        }
-
-        let invalid_input = "invalid_input";
-        assert!(parse_input(invalid_input).is_err());
-    }
-
-    #[test]
-    fn test_parse_input_edge_cases() {
-        assert!(parse_input("a:b:c").is_err());
-        assert!(parse_input("").is_err());
-        assert!(parse_input(" : ").is_ok());
-
-        assert!(parse_input("user:message").is_ok());
     }
 
     #[test]

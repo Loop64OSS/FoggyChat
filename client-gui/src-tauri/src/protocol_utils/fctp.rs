@@ -112,16 +112,15 @@ pub async fn process_fctp_stream(
             200 => {
                 let formatted_msg = format!("<{}> {}", msg.from, msg.body);
                 ui_emit_fctp_message(&app, formatted_msg);
-
-                if let Err(e) = app
-                    .notification()
-                    .builder()
-                    .title("FoggyChat")
-                    .body(format!("{}: {}", msg.from, msg.body))
-                    .show()
-                {
-                    eprintln!("Failed to show notification: {:?}", e);
-                }
+                // if let Err(e) = app
+                //     .notification()
+                //     .builder()
+                //     .title("FoggyChat")
+                //     .body(format!("{}: {}", msg.from, msg.body))
+                //     .show()
+                // {
+                //     eprintln!("Failed to show notification: {:?}", e);
+                // }
             }
             201 => {
                 ui_emit_fctp_message(&app, format!("|SERVER| {}", msg.body));
