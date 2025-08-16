@@ -12,7 +12,7 @@
         requestPermission,
         sendNotification,
     } from "@tauri-apps/plugin-notification";
-    import { Check, LogIn, X } from "@lucide/svelte";
+    import { Check, GlobeLock, LogIn, X } from "@lucide/svelte";
     let isWaiting = false;
     let unlisten: () => void;
     let FpVerified = true;
@@ -81,9 +81,6 @@
             <h2 class="text-2xl font-semibold">
                 Connecting to {$serverAddress}
             </h2>
-            <p>
-                Please verify the fingerprint to ensure the key wasn’t spoofed:
-            </p>
         </header>
         {#if FpVerified}
             <div class="card preset-outlined-surface-200-800 p-2">
@@ -91,6 +88,9 @@
             </div>
         {/if}
         {#if !FpVerified}
+            <p>
+                Please verify the fingerprint to ensure the key wasn’t spoofed:
+            </p>
             <div class="flex gap-1 items-center">
                 <p>BLAKE3</p>
                 <p
@@ -123,7 +123,7 @@
     </div>
 {/if}
 
-<main class="flex flex-col justify-center">
+<main class="flex flex-col justify-center h-screen">
     <div class="m-auto">
         <div class=" mx-2">
             <div class="flex items-center gap-4 mb-4">
