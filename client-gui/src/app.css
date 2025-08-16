@@ -14,27 +14,11 @@
 }
 
 *:focus {
-    box-shadow: none !important;
+    outline: none !important;
 }
 
-#app,
-body,
-html,
-#root {
-    overflow-y: auto;
-    user-select: none;
-    cursor: default;
-    overflow: hidden;
-
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    -webkit-text-size-adjust: 100%;
-}
-
-main {
-    height: 100vh;
+body {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+    height: 100dvh;
 }

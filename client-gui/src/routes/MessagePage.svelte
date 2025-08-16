@@ -56,7 +56,7 @@
     }
 </script>
 
-<main class="flex flex-col">
+<main class="flex flex-col h-screen">
     <header
         class="grid sm:grid-cols-[auto_1fr_auto] gap-2 sm:mr-0 grid-cols-1 justify-between mt-2 mx-2 card items-stretch"
     >
@@ -99,7 +99,7 @@
     <hr class="hr" />
 
     <form
-        class="sticky w-full card body-background-color dark:body-background-color-dark p-3 rounded-xl shadow-lg"
+        class="w-full card body-background-color dark:body-background-color-dark p-3 rounded-xl"
         on:submit|preventDefault={sendMessage}
     >
         <div class="grid grid-cols-[1fr_auto] gap-2">
