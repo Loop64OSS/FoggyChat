@@ -56,7 +56,7 @@
     }
 </script>
 
-<main class="flex flex-col h-screen">
+<main class="flex flex-col h-full">
     <header
         class="grid sm:grid-cols-[auto_1fr_auto] gap-2 sm:mr-0 grid-cols-1 justify-between mt-2 mx-2 card items-stretch"
     >
