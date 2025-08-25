@@ -123,7 +123,7 @@
     </div>
 {/if}
 
-<main class="flex flex-col justify-center h-screen">
+<main class="flex flex-col justify-center h-full">
     <div class="m-auto">
         <div class=" mx-2">
             <div class="flex items-center gap-4 mb-4">
