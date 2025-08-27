@@ -148,9 +148,9 @@ pub async fn process_fctp_stream(
                 ui_emit_fctp_message(
                     &app,
                     format!(
-                    "[!Unsupported code!]: {}\nUpdate your client or ask server admin to update!",
-                    msg.code
-                ),
+                        "[!Unsupported code!]: {}\nUpdate your client or contact server admin!",
+                        msg.code
+                    ),
                 );
             }
         }

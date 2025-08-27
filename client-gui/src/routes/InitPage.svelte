@@ -77,10 +77,18 @@
            z-50 body-background-color dark:body-background-color-dark text-inherit
            max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-2 animate-fadeIn"
     >
-        <header class="mb-4">
+        <header class="mb-4 flex flex-col sm:flex-row justify-between">
             <h2 class="text-2xl font-semibold">
                 Connecting to {$serverAddress}
             </h2>
+            <button
+                class="btn preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform"
+                on:click={(_) => {
+                    isWaiting = false;
+                    FpVerified = true;
+                    sendStatus("USER::DISCONNECT");
+                }}><X size={18} /> Cancel</button
+            >
         </header>
         {#if FpVerified}
             <div class="card preset-outlined-surface-200-800 p-2">
