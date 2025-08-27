@@ -68,7 +68,7 @@
                 <h1>{$serverAddress}</h1>
             </div>
             <button
-                class="btn preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform"
+                class="btn btn-sm preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform"
                 on:click={disconnectFromServer}
             >
                 Leave
