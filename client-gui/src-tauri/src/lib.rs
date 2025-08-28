@@ -364,7 +364,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
                 if get_session_key() == Key::<Aes256Gcm>::default() {
                     *last_pong_clone.lock().await = Instant::now();
-                } else if elapsed.as_millis() > 10000 {
+                } else if elapsed.as_secs() > 240 {
                     println!(
                         "Server not responding, last pong: {} ms ago",
                         elapsed.as_millis()
@@ -379,7 +379,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         let tx_clone = tx.clone();
         let handle = tokio::spawn(async move {
             loop {
-                sleep(Duration::from_secs(5)).await;
+                sleep(Duration::from_secs(120)).await;
 
                 if get_session_key() != Key::<Aes256Gcm>::default() {
                     let ping_packet = fctp::encapsulate_to_fctp(

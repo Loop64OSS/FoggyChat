@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::protocol_utils::fctp::send_fctp_message;
 use crate::protocol_utils::fctp_client::ClientInfo;
 use crate::protocol_utils::fctp_client::Clients;
 use crate::protocol_utils::fctp_secure::get_cert_pub;
@@ -94,9 +95,10 @@ async fn handle_client(
 
     let client_info = ClientInfo {
         socket: Arc::new(Mutex::new(writer)),
-        connected_at: std::time::Instant::now(),
         conn_session_key: Key::<Aes256Gcm>::default(),
+        ext_connected_at: std::time::Instant::now(),
         ext_session_username: id.clone(),
+        ext_rate_limit_last_packet: std::time::Instant::now(),
     };
 
     {
@@ -145,10 +147,37 @@ async fn handle_client(
                         break;
                     }
                 } else {
-                    if let Err(e) =
-                        fctp::handle_encrypted_message(message, &id, session_key, &clients).await
-                    {
-                        eprintln!("Message handling error for {}: {}", id, e);
+                    let process_message = {
+                        let mut map = clients.lock().await;
+                        if let Some(client_info) = map.get_mut(&id) {
+                            let elapsed = client_info.ext_rate_limit_last_packet.elapsed();
+                            if elapsed >= std::time::Duration::from_secs(2) {
+                                client_info.ext_rate_limit_last_packet = std::time::Instant::now();
+                                true
+                            } else {
+                                println!("Dropping message from {} due to rate limit", id);
+                                send_fctp_message(
+                                    client_info,
+                                    405,
+                                    get_id(),
+                                    "You are being rate limited, slow down!",
+                                    &id,
+                                )
+                                .await;
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+
+                    if process_message {
+                        if let Err(e) =
+                            fctp::handle_encrypted_message(message, &id, session_key, &clients)
+                                .await
+                        {
+                            eprintln!("Message handling error for {}: {}", id, e);
+                        }
                     }
                 }
             }
