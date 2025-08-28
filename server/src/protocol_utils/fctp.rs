@@ -60,7 +60,6 @@ fn parse_fctp_message(message: &str) -> Option<FctpMessage> {
     }
 
     let code = lines.next()?.trim().parse::<i32>().ok()?;
-
     let from = lines.next()?.strip_prefix("From: ")?.trim().to_string();
     let body = lines.next()?.strip_prefix("Body: ")?.trim().to_string();
     let to = lines.next()?.strip_prefix("To: ")?.trim().to_string();
@@ -176,10 +175,7 @@ pub async fn handle_encrypted_message(
                         client_info,
                         201,
                         get_id(),
-                        &format!(
-                            "motd=Welcome to Loop64.com FoggyChat server. id={}",
-                            client_id
-                        ),
+                        &format!("Welcome to Loop64.com FoggyChat server."),
                         client_id,
                     )
                     .await;
@@ -253,7 +249,7 @@ pub async fn command_handler(
                 id_clone,
                 client_info.ext_session_username,
                 get_id(),
-                client_info.connected_at.elapsed().as_secs(),
+                client_info.ext_connected_at.elapsed().as_secs(),
             );
             send_fctp_message(client_info, 201, get_id(), &msg, id_clone).await;
         }
