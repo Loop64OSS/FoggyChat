@@ -1,10 +1,11 @@
 use aes_gcm::{Aes256Gcm, Key};
 use tokio::io::AsyncWriteExt;
+use x25519_dalek::PublicKey;
 
 use crate::{
     crypt::{self, symmetric},
     get_id,
-    protocol_utils::fctp_client,
+    protocol_utils::{fctp_client, fctp_operations::kick_client},
 };
 
 pub struct FctpMessage {
@@ -51,8 +52,6 @@ pub fn decapsulate_fctp_message(msg: &[u8], session_key: Key<Aes256Gcm>) -> Opti
 }
 
 fn parse_fctp_message(message: &str) -> Option<FctpMessage> {
-    println!("Parsing message: {}", message);
-
     let mut lines = message.lines();
 
     if lines.next()? != "FoggyChat Transfer Protocol 0.1" {
@@ -90,18 +89,27 @@ pub async fn send_fctp_message(
         eprintln!("Failed to encrypt FCTP message - empty result");
     }
 }
+//Finding ... by nick
+async fn find_key_by_nick(clients: &fctp_client::Clients, nick: &str) -> Option<PublicKey> {
+    let map = clients.lock().await;
+    map.iter()
+        .find(|(_, client)| client.ext_session_username == nick)
+        .map(|(_, client)| client.conn_e2ee_public)
+}
+
 async fn find_id_by_nick(clients: &fctp_client::Clients, nick: &str) -> Option<String> {
     let map = clients.lock().await;
     map.iter()
         .find(|(_, client)| client.ext_session_username == nick)
         .map(|(id, _)| id.clone())
 }
+//Nick taken checker
 async fn is_nick_taken(clients: &fctp_client::Clients, nick: &str, current_id: &str) -> bool {
     let map = clients.lock().await;
     map.iter()
         .any(|(id, client)| id != current_id && client.ext_session_username == nick)
 }
-
+//encrypted message handler
 pub async fn handle_encrypted_message(
     msg: &[u8],
     client_id: &str,
@@ -109,8 +117,13 @@ pub async fn handle_encrypted_message(
     clients: &fctp_client::Clients,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(fctp_message) = decapsulate_fctp_message(msg, session_key) {
+        println!(
+            "{},{},{},{}",
+            fctp_message.code, fctp_message.from, fctp_message.body, fctp_message.to
+        );
         match fctp_message.code {
             200 => {
+                //default message route code
                 let recipient = fctp_message.to.trim();
                 let recipient_id = if let Some(id) = find_id_by_nick(clients, recipient).await {
                     id
@@ -169,8 +182,9 @@ pub async fn handle_encrypted_message(
             900 => {
                 let mut map = clients.lock().await;
                 if let Some(client_info) = map.get_mut(client_id) {
+                    //send id information
                     send_fctp_message(client_info, 900, get_id(), "id", client_id).await;
-
+                    //MOTD
                     send_fctp_message(
                         client_info,
                         201,
@@ -181,11 +195,57 @@ pub async fn handle_encrypted_message(
                     .await;
                 }
             }
+            901 => {
+                let mut map = clients.lock().await;
+                if let Some(client_info) = map.get_mut(client_id) {
+                    let decoded = crypt::utils::base64_decode(&fctp_message.body.trim())
+                        .expect("Failed decoding message");
+                    let pk_bytes: [u8; 32] = match TryInto::<[u8; 32]>::try_into(decoded) {
+                        Ok(val) => val,
+                        Err(_) => {
+                            kick_client(clients, client_id).await;
+                            [0u8; 32]
+                        }
+                    };
+                    //set public key of the user
+                    client_info.conn_e2ee_public = PublicKey::from(pk_bytes);
+                }
+            }
+            902 => {
+                let found_pk = find_key_by_nick(clients, &fctp_message.body.trim()).await;
+
+                let mut map = clients.lock().await;
+                if let Some(client_info) = map.get_mut(client_id) {
+                    //find key by nick in fctp message body and respond with it
+
+                    //TODO: no key message handling
+                    if let Some(pk) = found_pk {
+                        send_fctp_message(
+                            client_info,
+                            902,
+                            get_id(),
+                            &crypt::utils::base64_encode(pk.as_bytes()),
+                            client_id,
+                        )
+                        .await;
+                    } else {
+                        send_fctp_message(
+                            client_info,
+                            505,
+                            get_id(),
+                            "Couldn't find user key",
+                            client_id,
+                        )
+                        .await;
+                    }
+                }
+            }
             201 => {
                 let mut clients_guard = clients.lock().await;
                 if let Some(client_info) = clients_guard.get_mut(client_id) {
                     let mut client_info_clone = client_info.clone();
                     drop(clients_guard);
+                    //handle user commands on code 201
 
                     command_handler(
                         fctp_message,
@@ -202,6 +262,7 @@ pub async fn handle_encrypted_message(
                 }
             }
             _ => {
+                //unsupported code
                 let mut map = clients.lock().await;
                 if let Some(client_info) = map.get_mut(client_id) {
                     send_fctp_message(
@@ -245,15 +306,15 @@ pub async fn command_handler(
 
         "whoami" => {
             let msg = format!(
-                "You are connected as: {} / Your session nick: {} / ServerID: {} / Connected for: {} seconds",
+                "You are connected as: {} / Your session nick: {} / ServerID: {} / Connected for: {} seconds / Your E2EE public key (base64): {}",
                 id_clone,
                 client_info.ext_session_username,
                 get_id(),
                 client_info.ext_connected_at.elapsed().as_secs(),
+                crypt::utils::base64_encode(client_info.conn_e2ee_public.as_bytes())
             );
             send_fctp_message(client_info, 201, get_id(), &msg, id_clone).await;
         }
-
         "setnick" => {
             if let Some(new_name) = parts.next() {
                 if is_nick_taken(clients, new_name, id_clone).await {
