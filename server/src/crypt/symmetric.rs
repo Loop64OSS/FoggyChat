@@ -46,9 +46,11 @@ pub fn decrypt(
     Ok(plain_text)
 }
 
+// Higher level en/decryption for FCTP message format
+
 pub fn encrypt_binary(data: &str, key: &Key<Aes256Gcm>) -> Result<Vec<u8>, aes_gcm::Error> {
     let cipher = Aes256Gcm::new(key);
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 12 bajtów nonce (96-bit)
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     let cipher_text = cipher.encrypt(&nonce, data.as_bytes())?;
 
