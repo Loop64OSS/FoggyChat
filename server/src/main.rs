@@ -96,9 +96,11 @@ async fn handle_client(
     let client_info = ClientInfo {
         socket: Arc::new(Mutex::new(writer)),
         conn_session_key: Key::<Aes256Gcm>::default(),
+        conn_e2ee_public: PublicKey::from([0u8; 32]),
         ext_connected_at: std::time::Instant::now(),
         ext_session_username: id.clone(),
         ext_rate_limit_last_packet: std::time::Instant::now(),
+        ext_rate_limit_ignore_packet_count: 5,
     };
 
     {
@@ -151,20 +153,25 @@ async fn handle_client(
                         let mut map = clients.lock().await;
                         if let Some(client_info) = map.get_mut(&id) {
                             let elapsed = client_info.ext_rate_limit_last_packet.elapsed();
-                            if elapsed >= std::time::Duration::from_secs(2) {
-                                client_info.ext_rate_limit_last_packet = std::time::Instant::now();
-                                true
+                            if client_info.ext_rate_limit_ignore_packet_count <= 0 {
+                                if elapsed >= std::time::Duration::from_millis(500) {
+                                    client_info.ext_rate_limit_last_packet =
+                                        std::time::Instant::now();
+                                    true
+                                } else {
+                                    send_fctp_message(
+                                        client_info,
+                                        405,
+                                        get_id(),
+                                        "You are being rate limited, slow down!",
+                                        &id,
+                                    )
+                                    .await;
+                                    false
+                                }
                             } else {
-                                println!("Dropping message from {} due to rate limit", id);
-                                send_fctp_message(
-                                    client_info,
-                                    405,
-                                    get_id(),
-                                    "You are being rate limited, slow down!",
-                                    &id,
-                                )
-                                .await;
-                                false
+                                client_info.ext_rate_limit_ignore_packet_count -= 1;
+                                true
                             }
                         } else {
                             false

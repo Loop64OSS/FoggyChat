@@ -7,16 +7,19 @@
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
     import { serverAddress } from "../lib/store.js";
+    import { load } from "@tauri-apps/plugin-store";
+
     import {
         isPermissionGranted,
         requestPermission,
         sendNotification,
     } from "@tauri-apps/plugin-notification";
     import { Check, GlobeLock, LogIn, X } from "@lucide/svelte";
-    let isWaiting = false;
+    let isWaiting: boolean = false;
     let unlisten: () => void;
-    let FpVerified = true;
-    let FP = "";
+    let FpVerified: boolean = true;
+    let FP: string;
+    let lastConnectionAddress: string;
 
     function handleConnect() {
         isWaiting = true;
@@ -35,9 +38,22 @@
             permissionGranted = permission === "granted";
         }
     }
+    async function fillConnectionAddress() {
+        $serverAddress = lastConnectionAddress;
+    }
     onMount(async () => {
         requestPermissions();
 
+        const store = await load("store.json", {
+            autoSave: false,
+            defaults: {},
+        });
+        const lastConnection = await store.get<{ address: string }>(
+            "last-connection"
+        );
+        lastConnectionAddress = lastConnection?.address ?? "";
+
+        //Status listening from backend
         if (!unlisten) {
             unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
@@ -45,6 +61,11 @@
                 let status: string = event.payload as string;
                 if (status === "OK::CON_ESTABLISHED" && FpVerified) {
                     isWaiting = false;
+                    await store.set("last-connection", {
+                        address: $serverAddress,
+                    });
+                    await store.save();
+
                     navigate("/messages");
                 } else if (status.startsWith("USER::VERIFY_FP")) {
                     FP = status.split("::")[2];
@@ -139,29 +160,39 @@
                 <p class="text">DEV/1</p>
             </div>
             <form on:submit|preventDefault={handleConnect}>
-                <div class="grid grid-cols-[1fr_auto] gap-2">
-                    <input
-                        class="input rounded-lg focus:ring-2 focus:ring-primary-500"
-                        id="msginput"
-                        type="text"
-                        placeholder="Server address"
-                        bind:value={$serverAddress}
-                        required
-                    />
+                <div class="flex flex-col">
+                    <div class="grid grid-cols-[1fr_auto] gap-2">
+                        <input
+                            class="input rounded-lg focus:ring-2 focus:ring-primary-500"
+                            id="msginput"
+                            type="text"
+                            placeholder="Server address"
+                            bind:value={$serverAddress}
+                            required
+                        />
 
-                    <button
-                        class="btn px-3 preset-filled-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
-                        type="submit"
-                    >
-                        Connect
-                    </button>
+                        <button
+                            class="btn px-3 preset-filled-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
+                            type="submit"
+                        >
+                            Connect
+                        </button>
+                    </div>
+                    {#if lastConnectionAddress}
+                        <button
+                            class="btn mt-2 preset-outlined-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
+                            on:click={fillConnectionAddress}
+                            type="button"
+                            >Click to fill: {lastConnectionAddress}</button
+                        >
+                    {/if}
                 </div>
             </form>
         </div>
     </div>
     <div class="m-2">
         <p>This is a development version. It should not be shared.</p>
-        <p>© Loop64 / FOG64</p>
+        <p>© Loop64™ / FOG Privacy Toolkit</p>
     </div>
 </main>
 <Toaster {toaster} />
