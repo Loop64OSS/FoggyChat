@@ -96,9 +96,12 @@ async fn handle_client(
     let client_info = ClientInfo {
         socket: Arc::new(Mutex::new(writer)),
         conn_session_key: Key::<Aes256Gcm>::default(),
+        conn_e2ee_public: PublicKey::from([0u8; 32]),
         ext_connected_at: std::time::Instant::now(),
         ext_session_username: id.clone(),
         ext_rate_limit_last_packet: std::time::Instant::now(),
+        ext_rate_limit_ignore_packet_count: 5,
+        ext_rate_limit_burst_count: 2,
     };
 
     {
@@ -151,11 +154,17 @@ async fn handle_client(
                         let mut map = clients.lock().await;
                         if let Some(client_info) = map.get_mut(&id) {
                             let elapsed = client_info.ext_rate_limit_last_packet.elapsed();
-                            if elapsed >= std::time::Duration::from_secs(2) {
+                            if client_info.ext_rate_limit_ignore_packet_count > 0 {
+                                client_info.ext_rate_limit_ignore_packet_count -= 1;
+                                true
+                            } else if client_info.ext_rate_limit_burst_count > 0 {
+                                client_info.ext_rate_limit_burst_count -= 1;
+                                true
+                            } else if elapsed >= std::time::Duration::from_millis(500) {
                                 client_info.ext_rate_limit_last_packet = std::time::Instant::now();
+                                client_info.ext_rate_limit_burst_count = 1; // resetujemy burst do 1, bo 1 zużywamy teraz
                                 true
                             } else {
-                                println!("Dropping message from {} due to rate limit", id);
                                 send_fctp_message(
                                     client_info,
                                     405,

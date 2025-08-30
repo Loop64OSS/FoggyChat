@@ -7,10 +7,15 @@ use std::{
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{sync::Mutex, time::Instant};
+use uuid::timestamp;
+use x25519_dalek::PublicKey;
 
 use crate::{
-    crypt::symmetric,
-    protocol_utils::{self, fctp_secure::get_session_key},
+    crypt::{symmetric, utils::base64_decode},
+    protocol_utils::{
+        self,
+        fctp_secure::{get_e2ee_pub, get_session_key},
+    },
 };
 
 pub struct FctpMessage {
@@ -26,6 +31,7 @@ pub struct FctpMessage {
 
 lazy_static! {
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
+    static ref E2EE_SAVED_KEY: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
 }
 
 pub fn set_server_id(new_id: &str) {
@@ -37,6 +43,14 @@ pub fn get_server_id() -> String {
     SERVER_ID.read().expect("Lock poisoned").clone()
 }
 
+pub fn save_tmp_key(new_key: PublicKey) {
+    let mut key = E2EE_SAVED_KEY.write().expect("Lock poisoned");
+    *key = new_key;
+}
+
+pub fn get_tmp_key() -> PublicKey {
+    E2EE_SAVED_KEY.read().expect("Lock poisoned").clone()
+}
 /*
     FCTP message processing with binary encryption
 */
@@ -107,10 +121,15 @@ pub async fn process_fctp_stream(
     message: &[u8],
     last_pong: &Arc<Mutex<Instant>>,
 ) {
-    if let Some(msg) = decapsulate_fctp_message(message, get_session_key()) {
-        match msg.code {
+    if let Some(fctp_message) = decapsulate_fctp_message(message, get_session_key()) {
+        println!(
+            "{},{},{},{}",
+            fctp_message.code, fctp_message.from, fctp_message.body, fctp_message.to
+        );
+        match fctp_message.code {
             200 => {
-                let formatted_msg = format!("<{}> {}", msg.from, msg.body);
+                //default c<-c message
+                let formatted_msg = format!("<{}> {}", fctp_message.from, fctp_message.body);
                 ui_emit_fctp_message(&app, formatted_msg);
                 // if let Err(e) = app
                 //     .notification()
@@ -123,21 +142,35 @@ pub async fn process_fctp_stream(
                 // }
             }
             201 => {
-                ui_emit_fctp_message(&app, format!("|SERVER| {}", msg.body));
+                //c<-s message
+                ui_emit_fctp_message(&app, format!("|SERVER| {}", fctp_message.body));
             }
             405 => {
-                ui_emit_fctp_message(&app, format!("[!Client error!] {}", msg.body));
+                //Error by client
+                ui_emit_fctp_message(&app, format!("[!Client error!] {}", fctp_message.body));
             }
             505 => {
-                ui_emit_fctp_message(&app, format!("[!Server error!] {}", msg.body));
+                //Error by server
+                ui_emit_fctp_message(&app, format!("[!Server error!] {}", fctp_message.body));
             }
             900 => {
-                if msg.body == "id" {
-                    let id_clone = msg.to.clone();
-                    let server_id_clone = msg.from.clone();
+                //9xx - SYSTEM MESSAGE POOL
+                if fctp_message.body == "id" {
+                    let id_clone = fctp_message.to.clone();
+                    let server_id_clone = fctp_message.from.clone();
                     protocol_utils::fctp_me::set_id(&id_clone);
                     set_server_id(&server_id_clone);
                 }
+            }
+            902 => {
+                let tmp_key_bytes =
+                    base64_decode(&fctp_message.body.trim()).expect("Base64 decode failed");
+                let tmp_key_array: [u8; 32] = tmp_key_bytes
+                    .as_slice()
+                    .try_into()
+                    .expect("Invalid key length");
+                let tmp_key = PublicKey::from(tmp_key_array);
+                save_tmp_key(tmp_key);
             }
             11 => {
                 // Pong handling
@@ -145,11 +178,12 @@ pub async fn process_fctp_stream(
                 *pong_time = Instant::now();
             }
             _ => {
+                //Code not matching
                 ui_emit_fctp_message(
                     &app,
                     format!(
                         "[!Unsupported code!]: {}\nUpdate your client or contact server admin!",
-                        msg.code
+                        fctp_message.code
                     ),
                 );
             }

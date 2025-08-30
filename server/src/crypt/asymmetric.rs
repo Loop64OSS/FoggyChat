@@ -27,13 +27,13 @@ fn derive_key(shared_secret: &[u8], salt: &[u8]) -> [u8; 32] {
 }
 
 pub fn encrypt(
-    recipient_pub: &PublicKey,
+    public: &PublicKey,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let ephemeral = StaticSecret::random_from_rng(OsRng);
     let eph_pub = PublicKey::from(&ephemeral);
 
-    let shared = x25519(ephemeral.to_bytes(), recipient_pub.to_bytes());
+    let shared = x25519(ephemeral.to_bytes(), public.to_bytes());
 
     let mut salt = [0u8; 16];
     OsRng.fill_bytes(&mut salt);
@@ -62,7 +62,7 @@ pub fn encrypt(
 }
 
 pub fn decrypt(
-    recipient_secret: &StaticSecret,
+    secret: &StaticSecret,
     message: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     // minimal length: 1 (ver) + 32 (eph_pub) + 24 (nonce) + 16 (salt) + 1 (ciphertext)
@@ -84,7 +84,7 @@ pub fn decrypt(
 
     let ciphertext = &message[73..];
 
-    let shared = x25519(recipient_secret.to_bytes(), eph_pub.to_bytes());
+    let shared = x25519(secret.to_bytes(), eph_pub.to_bytes());
     let key = derive_key(&shared, &salt);
     let cipher = XChaCha20Poly1305::new_from_slice(&key)?;
 

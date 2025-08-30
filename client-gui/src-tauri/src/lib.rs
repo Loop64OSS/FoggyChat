@@ -8,6 +8,8 @@ use crate::protocol_utils::fctp;
 use crate::protocol_utils::fctp::get_server_id;
 use crate::protocol_utils::fctp::ui_emit_fctp_message;
 use crate::protocol_utils::fctp_me;
+use crate::protocol_utils::fctp_secure::get_e2ee_pub;
+use crate::protocol_utils::fctp_secure::set_e2ee;
 use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
@@ -48,6 +50,7 @@ pub fn run() {
     std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -62,8 +65,10 @@ pub fn run() {
 }
 
 #[tauri::command]
-async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<String, String> {
+async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<(), String> {
     if message.starts_with("/") {
+        //Command handling
+
         let command = message.trim_start_matches('/').trim();
         let packet = fctp::encapsulate_to_fctp(
             201,
@@ -80,8 +85,23 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         } else {
             return Err("Channel sender not initialized".into());
         }
-        Ok("ok".into())
+        Ok(())
     } else {
+        //Message handling
+        let packet = fctp::encapsulate_to_fctp(
+            902,
+            &fctp_me::get_id(),
+            recipient.trim(),
+            &get_server_id(),
+            get_session_key(),
+        );
+        if let Some(tx) = &*TX.lock().await {
+            tx.send(packet)
+                .await
+                .map_err(|e| format!("Failed to send packet: {}", e))?;
+        } else {
+            return Err("Channel sender not initialized".into());
+        }
         let packet = fctp::encapsulate_to_fctp(
             200,
             &fctp_me::get_id(),
@@ -97,7 +117,7 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         } else {
             return Err("Channel sender not initialized".into());
         }
-        Ok("ok".into())
+        Ok(())
     }
 }
 
@@ -155,25 +175,28 @@ async fn handle_server_message(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if get_session_key() == Key::<Aes256Gcm>::default() {
         if get_exchange_pub() == PublicKey::from([0u8; 32]) {
+            //Certificate Public key
             let message_str = String::from_utf8_lossy(data).trim().to_string();
             match crypt::utils::base64_decode(&message_str) {
                 Ok(decoded) => {
                     if decoded.len() == 32 {
                         let cert_pub = PublicKey::from(<[u8; 32]>::try_from(decoded.as_slice())?);
+                        //Ask user to verify certificate fingerprint
                         ui_emit_status(
                             app.clone(),
                             format!("USER::VERIFY_FP::{}", crypt::utils::blake3_hash(&decoded)),
                         );
-
+                        //wait for response
                         while !fp_verified.load(Ordering::Relaxed) {
                             sleep(Duration::from_millis(100)).await;
                         }
-
+                        //generate exchange key
                         let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
                         let rec_sec = StaticSecret::from(rec_sec_bytes);
                         let rec_pub = PublicKey::from(rec_pub_bytes);
                         set_exchange(rec_pub, rec_sec);
 
+                        //encrypt exchange key with certificate
                         match asymmetric::encrypt(&cert_pub, rec_pub.as_bytes()) {
                             Ok(encrypted) => {
                                 let encoded = crypt::utils::base64_encode(&encrypted);
@@ -187,6 +210,7 @@ async fn handle_server_message(
                 Err(e) => eprintln!("Decoding error: {}", e),
             }
         } else {
+            //session key
             let message_str = String::from_utf8_lossy(data).trim().to_string();
             match crypt::utils::base64_decode(&message_str) {
                 Ok(decoded) => match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
@@ -196,17 +220,36 @@ async fn handle_server_message(
                                 .try_into()
                                 .map_err(|e| format!("An Error Occurred: {:?}", e))?;
                             let session_key = Key::<Aes256Gcm>::from_slice(&key_array).clone();
+                            //saving session key
                             set_session_key(session_key);
 
                             println!(
                                 "Session key established: {}",
                                 crypt::utils::base64_encode(get_session_key().as_slice())
                             );
+                            //Wait for ui
+                            sleep(Duration::from_millis(100)).await;
+                            //requesting ID
 
                             let packet = fctp::encapsulate_to_fctp(
                                 900,
                                 &fctp_me::get_id(),
                                 "id",
+                                &get_server_id(),
+                                get_session_key(),
+                            );
+                            tx.send(packet).await?;
+                            //generating e2ee key pair and sending e2ee public key
+                            let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
+                            let rec_sec = StaticSecret::from(rec_sec_bytes);
+                            let rec_pub = PublicKey::from(rec_pub_bytes);
+                            set_e2ee(rec_pub, rec_sec);
+                            let e2ee_pub = get_e2ee_pub();
+                            let e2ee_pk_bytes = e2ee_pub.as_bytes();
+                            let packet = fctp::encapsulate_to_fctp(
+                                901,
+                                &fctp_me::get_id(),
+                                &crypt::utils::base64_encode(e2ee_pk_bytes),
                                 &get_server_id(),
                                 get_session_key(),
                             );
