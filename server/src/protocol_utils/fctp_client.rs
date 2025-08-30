@@ -14,4 +14,5 @@ pub struct ClientInfo {
     pub ext_session_username: String,
     pub ext_rate_limit_last_packet: std::time::Instant,
     pub ext_rate_limit_ignore_packet_count: i32,
+    pub ext_rate_limit_burst_count: i32,
 }

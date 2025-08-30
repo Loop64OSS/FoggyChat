@@ -12,7 +12,10 @@ use x25519_dalek::PublicKey;
 
 use crate::{
     crypt::{symmetric, utils::base64_decode},
-    protocol_utils::{self, fctp_secure::get_session_key},
+    protocol_utils::{
+        self,
+        fctp_secure::{get_e2ee_pub, get_session_key},
+    },
 };
 
 pub struct FctpMessage {
@@ -160,7 +163,6 @@ pub async fn process_fctp_stream(
                 }
             }
             902 => {
-                //TODO: Saving user key
                 let tmp_key_bytes =
                     base64_decode(&fctp_message.body.trim()).expect("Base64 decode failed");
                 let tmp_key_array: [u8; 32] = tmp_key_bytes

@@ -90,12 +90,11 @@ pub async fn send_fctp_message(
     }
 }
 //Finding ... by nick
-async fn find_key_by_nick(clients: &fctp_client::Clients, nick: &str) -> PublicKey {
+async fn find_key_by_nick(clients: &fctp_client::Clients, nick: &str) -> Option<PublicKey> {
     let map = clients.lock().await;
     map.iter()
         .find(|(_, client)| client.ext_session_username == nick)
         .map(|(_, client)| client.conn_e2ee_public)
-        .unwrap()
 }
 
 async fn find_id_by_nick(clients: &fctp_client::Clients, nick: &str) -> Option<String> {
@@ -213,23 +212,32 @@ pub async fn handle_encrypted_message(
                 }
             }
             902 => {
+                let found_pk = find_key_by_nick(clients, &fctp_message.body.trim()).await;
+
                 let mut map = clients.lock().await;
                 if let Some(client_info) = map.get_mut(client_id) {
                     //find key by nick in fctp message body and respond with it
 
                     //TODO: no key message handling
-                    send_fctp_message(
-                        client_info,
-                        902,
-                        get_id(),
-                        &crypt::utils::base64_encode(
-                            find_key_by_nick(clients, &fctp_message.body.trim())
-                                .await
-                                .as_bytes(),
-                        ),
-                        client_id,
-                    )
-                    .await;
+                    if let Some(pk) = found_pk {
+                        send_fctp_message(
+                            client_info,
+                            902,
+                            get_id(),
+                            &crypt::utils::base64_encode(pk.as_bytes()),
+                            client_id,
+                        )
+                        .await;
+                    } else {
+                        send_fctp_message(
+                            client_info,
+                            505,
+                            get_id(),
+                            "Couldn't find user key",
+                            client_id,
+                        )
+                        .await;
+                    }
                 }
             }
             201 => {
