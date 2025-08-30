@@ -65,8 +65,10 @@ pub fn run() {
 }
 
 #[tauri::command]
-async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<String, String> {
+async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<(), String> {
     if message.starts_with("/") {
+        //Command handling
+
         let command = message.trim_start_matches('/').trim();
         let packet = fctp::encapsulate_to_fctp(
             201,
@@ -83,8 +85,23 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         } else {
             return Err("Channel sender not initialized".into());
         }
-        Ok("ok".into())
+        Ok(())
     } else {
+        //Message handling
+        let packet = fctp::encapsulate_to_fctp(
+            902,
+            &fctp_me::get_id(),
+            recipient.trim(),
+            &get_server_id(),
+            get_session_key(),
+        );
+        if let Some(tx) = &*TX.lock().await {
+            tx.send(packet)
+                .await
+                .map_err(|e| format!("Failed to send packet: {}", e))?;
+        } else {
+            return Err("Channel sender not initialized".into());
+        }
         let packet = fctp::encapsulate_to_fctp(
             200,
             &fctp_me::get_id(),
@@ -100,7 +117,7 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         } else {
             return Err("Channel sender not initialized".into());
         }
-        Ok("ok".into())
+        Ok(())
     }
 }
 
