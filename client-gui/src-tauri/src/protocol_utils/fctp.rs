@@ -1,7 +1,10 @@
 use aes_gcm::{Aes256Gcm, Key};
 use lazy_static::lazy_static;
 use std::{
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
@@ -11,9 +14,9 @@ use uuid::timestamp;
 use x25519_dalek::PublicKey;
 
 use crate::{
-    crypt::{symmetric, utils::base64_decode},
+    crypt::{self, symmetric, utils::base64_decode},
     protocol_utils::{
-        self,
+        self, fctp,
         fctp_secure::{get_e2ee_pub, get_session_key},
     },
 };
@@ -33,6 +36,7 @@ lazy_static! {
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
     static ref E2EE_SAVED_KEY: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
 }
+pub static LAST_902_ACK: AtomicBool = AtomicBool::new(false);
 
 pub fn set_server_id(new_id: &str) {
     let mut id = SERVER_ID.write().expect("Lock poisoned");
@@ -129,8 +133,30 @@ pub async fn process_fctp_stream(
         match fctp_message.code {
             200 => {
                 //default c<-c message
-                let formatted_msg = format!("<{}> {}", fctp_message.from, fctp_message.body);
-                ui_emit_fctp_message(&app, formatted_msg);
+                match base64_decode(&fctp_message.body.trim()) {
+                    Ok(encrypted_message_bytes) => {
+                        match crypt::asymmetric::decrypt(
+                            &protocol_utils::fctp_secure::get_e2ee_sec(),
+                            &encrypted_message_bytes,
+                        ) {
+                            Ok(msg) => {
+                                let formatted_msg = format!(
+                                    "<{}> {}",
+                                    fctp_message.from,
+                                    String::from_utf8_lossy(&msg).trim()
+                                );
+                                ui_emit_fctp_message(&app, formatted_msg);
+                            }
+                            Err(err) => {
+                                eprintln!("Couldn't decrypt: {}", err)
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("Couldn't decode: {}", err)
+                    }
+                }
+
                 // if let Err(e) = app
                 //     .notification()
                 //     .builder()
@@ -171,6 +197,7 @@ pub async fn process_fctp_stream(
                     .expect("Invalid key length");
                 let tmp_key = PublicKey::from(tmp_key_array);
                 save_tmp_key(tmp_key);
+                LAST_902_ACK.store(true, Ordering::Relaxed);
             }
             11 => {
                 // Pong handling
