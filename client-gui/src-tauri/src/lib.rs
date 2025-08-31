@@ -6,6 +6,7 @@ use crate::crypt::asymmetric;
 use crate::crypt::symmetric;
 use crate::protocol_utils::fctp;
 use crate::protocol_utils::fctp::get_server_id;
+use crate::protocol_utils::fctp::get_tmp_key;
 use crate::protocol_utils::fctp::ui_emit_fctp_message;
 use crate::protocol_utils::fctp_me;
 use crate::protocol_utils::fctp_secure::get_e2ee_pub;
@@ -65,7 +66,11 @@ pub fn run() {
 }
 
 #[tauri::command]
-async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<(), String> {
+async fn ui_command_send_fctp_message(
+    message: &str,
+    recipient: &str,
+    app: AppHandle,
+) -> Result<(), String> {
     if message.starts_with("/") {
         //Command handling
 
@@ -88,6 +93,8 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         Ok(())
     } else {
         //Message handling
+        protocol_utils::fctp::LAST_902_ACK.store(false, Ordering::Relaxed);
+
         let packet = fctp::encapsulate_to_fctp(
             902,
             &fctp_me::get_id(),
@@ -102,22 +109,34 @@ async fn ui_command_send_fctp_message(message: &str, recipient: &str) -> Result<
         } else {
             return Err("Channel sender not initialized".into());
         }
-        let packet = fctp::encapsulate_to_fctp(
-            200,
-            &fctp_me::get_id(),
-            message.trim(),
-            recipient.trim(),
-            get_session_key(),
-        );
-
-        if let Some(tx) = &*TX.lock().await {
-            tx.send(packet)
-                .await
-                .map_err(|e| format!("Failed to send packet: {}", e))?;
-        } else {
-            return Err("Channel sender not initialized".into());
+        while !protocol_utils::fctp::LAST_902_ACK.load(Ordering::Relaxed) {
+            sleep(Duration::from_millis(100)).await;
         }
-        Ok(())
+        match crypt::asymmetric::encrypt(&get_tmp_key(), &message.trim().as_bytes()) {
+            Ok(msg) => {
+                let packet = fctp::encapsulate_to_fctp(
+                    200,
+                    &fctp_me::get_id(),
+                    &crypt::utils::base64_encode(&msg).trim(),
+                    recipient.trim(),
+                    get_session_key(),
+                );
+
+                if let Some(tx) = &*TX.lock().await {
+                    tx.send(packet)
+                        .await
+                        .map_err(|e| format!("Failed to send packet: {}", e))?;
+                    let formatted_msg = format!("[You] {}", message.trim());
+                    ui_emit_fctp_message(&app, formatted_msg);
+                } else {
+                    return Err("Channel sender not initialized".into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                return Err(format!("Encryption error: {:?}", err));
+            }
+        }
     }
 }
 

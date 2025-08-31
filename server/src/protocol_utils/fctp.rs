@@ -148,17 +148,6 @@ pub async fn handle_encrypted_message(
                         &recipient_id,
                     )
                     .await;
-
-                    if let Some(sender_info) = map.get_mut(client_id) {
-                        send_fctp_message(
-                            sender_info,
-                            200,
-                            &sender_nick,
-                            &fctp_message.body,
-                            client_id,
-                        )
-                        .await;
-                    }
                 } else {
                     if let Some(sender_info) = map.get_mut(client_id) {
                         send_fctp_message(
