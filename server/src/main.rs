@@ -162,14 +162,14 @@ async fn handle_client(
                                 true
                             } else if elapsed >= std::time::Duration::from_millis(500) {
                                 client_info.ext_rate_limit_last_packet = std::time::Instant::now();
-                                client_info.ext_rate_limit_burst_count = 1; // resetujemy burst do 1, bo 1 zużywamy teraz
+                                client_info.ext_rate_limit_burst_count = 1;
                                 true
                             } else {
                                 send_fctp_message(
                                     client_info,
                                     405,
                                     get_id(),
-                                    "You are being rate limited, slow down!",
+                                    "You are being rate limited, slow down! Your message has been dropped.",
                                     &id,
                                 )
                                 .await;
