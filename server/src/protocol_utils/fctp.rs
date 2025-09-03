@@ -110,7 +110,7 @@ async fn is_nick_taken(clients: &fctp_client::Clients, nick: &str, current_id: &
         .any(|(id, client)| id != current_id && client.ext_session_username == nick)
 }
 //encrypted message handler
-pub async fn handle_encrypted_message(
+pub async fn handle_fctp_message(
     msg: &[u8],
     client_id: &str,
     session_key: Key<Aes256Gcm>,

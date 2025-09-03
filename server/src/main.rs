@@ -48,44 +48,6 @@ fn generate_id() -> uuid::Uuid {
     uuid
 }
 
-async fn handle_key_exchange(
-    msg: &[u8],
-    client_id: &str,
-    clients: &Clients,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let msg_str = std::str::from_utf8(msg)?.trim();
-    let decoded = crypt::utils::base64_decode(msg_str)?;
-    let decrypted = asymmetric::decrypt(&get_cert_sec(), &decoded)
-        .map_err(|e| format!("Decryption failed: {:?}", e))?;
-
-    if decrypted.len() != 32 {
-        return Err("Invalid exchange key length".into());
-    }
-
-    let mut exchange_pubkey_bytes = [0u8; 32];
-    exchange_pubkey_bytes.copy_from_slice(&decrypted);
-    let exchange_pubkey = PublicKey::from(exchange_pubkey_bytes);
-
-    println!("Received exchange key from client: {}", client_id);
-
-    let mut map = clients.lock().await;
-    if let Some(client_info) = map.get_mut(client_id) {
-        client_info.conn_session_key = crypt::symmetric::keygen();
-
-        let encrypted = asymmetric::encrypt(&exchange_pubkey, &client_info.conn_session_key)
-            .map_err(|e| format!("Encryption failed: {:?}", e))?;
-        let encrypted_b64 = crypt::utils::base64_encode(&encrypted);
-
-        let mut writer = client_info.socket.lock().await;
-        writer
-            .write_all(format!("{}\r\n\r\n", encrypted_b64).as_bytes())
-            .await?;
-
-        println!("Sent session key to client: {}", client_id);
-    }
-
-    Ok(())
-}
 async fn handle_client(
     socket: tokio::net::TcpStream,
     clients: Clients,
@@ -145,7 +107,10 @@ async fn handle_client(
                 };
 
                 if session_key == Key::<Aes256Gcm>::default() {
-                    if let Err(e) = handle_key_exchange(message, &id, &clients).await {
+                    if let Err(e) =
+                        protocol_utils::fctp_secure::handle_key_exchange(message, &id, &clients)
+                            .await
+                    {
                         eprintln!("Key exchange error for {}: {}", id, e);
                         break;
                     }
@@ -182,8 +147,7 @@ async fn handle_client(
 
                     if process_message {
                         if let Err(e) =
-                            fctp::handle_encrypted_message(message, &id, session_key, &clients)
-                                .await
+                            fctp::handle_fctp_message(message, &id, session_key, &clients).await
                         {
                             eprintln!("Message handling error for {}: {}", id, e);
                         }
@@ -210,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:8081").await?;
     let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
 
+    //Server attribute setting
     set_id("00000000-0000-0000-0000-000000000000");
 
     let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
@@ -217,12 +182,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec_pub = PublicKey::from(rec_pub_bytes);
     set_cert(rec_pub, rec_sec);
 
+    //welcome message and info
     println!(
         "© Loop64 / FOG64 | Launching FoggyChat™ FCTP protocol server | SERVER_ID: {} | FINGERPRINT: {}",
         get_id(),
         crypt::utils::blake3_hash(rec_pub.as_bytes())
     );
 
+    //Incoming connection handling
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
@@ -242,24 +209,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/*
+    TESTS
+*/
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn symmetric() {
+    fn test_symmetric_encryption() {
         let key = symmetric::keygen();
 
-        match symmetric::encrypt("test", &key) {
-            Ok(encrypted) => {
-                println!("Encrypted: {}", encrypted);
-
-                match symmetric::decrypt(&encrypted, &key) {
-                    Ok(decrypted) => println!("Decrypted: {}", decrypted),
-                    Err(e) => eprintln!("Decryption error: {}", e),
+        match symmetric::encrypt_binary("test", &key) {
+            Ok(encrypted) => match symmetric::decrypt_binary(&encrypted, &key) {
+                Ok(decrypted) => {
+                    assert_eq!(String::from_utf8_lossy(&decrypted), "test");
                 }
-            }
-            Err(e) => eprintln!("Encryption error: {}", e),
+                Err(e) => panic!("Decryption error: {}", e),
+            },
+            Err(e) => panic!("Encryption error: {}", e),
         }
     }
 
