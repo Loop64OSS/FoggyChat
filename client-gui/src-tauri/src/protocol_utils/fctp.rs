@@ -36,7 +36,8 @@ lazy_static! {
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
     static ref E2EE_SAVED_KEY: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
 }
-pub static LAST_902_ACK: AtomicBool = AtomicBool::new(false);
+pub static LAST_ACK: AtomicBool = AtomicBool::new(false);
+pub static REQUEST_ERROR: AtomicBool = AtomicBool::new(false);
 
 pub fn set_server_id(new_id: &str) {
     let mut id = SERVER_ID.write().expect("Lock poisoned");
@@ -156,6 +157,7 @@ pub async fn process_fctp_stream(
                         eprintln!("Couldn't decode: {}", err)
                     }
                 }
+                LAST_ACK.store(true, Ordering::Relaxed);
 
                 // if let Err(e) = app
                 //     .notification()
@@ -170,14 +172,19 @@ pub async fn process_fctp_stream(
             201 => {
                 //c<-s message
                 ui_emit_fctp_message(&app, format!("|SERVER| {}", fctp_message.body));
+                LAST_ACK.store(true, Ordering::Relaxed);
             }
             405 => {
                 //Error by client
                 ui_emit_fctp_message(&app, format!("[!Client error!] {}", fctp_message.body));
+                LAST_ACK.store(true, Ordering::Relaxed);
+                REQUEST_ERROR.store(true, Ordering::Relaxed);
             }
             505 => {
                 //Error by server
                 ui_emit_fctp_message(&app, format!("[!Server error!] {}", fctp_message.body));
+                LAST_ACK.store(true, Ordering::Relaxed);
+                REQUEST_ERROR.store(true, Ordering::Relaxed);
             }
             900 => {
                 //9xx - SYSTEM MESSAGE POOL
@@ -197,7 +204,7 @@ pub async fn process_fctp_stream(
                     .expect("Invalid key length");
                 let tmp_key = PublicKey::from(tmp_key_array);
                 save_tmp_key(tmp_key);
-                LAST_902_ACK.store(true, Ordering::Relaxed);
+                LAST_ACK.store(true, Ordering::Relaxed);
             }
             11 => {
                 // Pong handling
