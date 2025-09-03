@@ -2,18 +2,18 @@
 mod crypt;
 mod protocol_utils;
 
-use crate::crypt::asymmetric;
-use crate::crypt::symmetric;
-use crate::protocol_utils::fctp;
-use crate::protocol_utils::fctp::get_server_id;
-use crate::protocol_utils::fctp::get_tmp_key;
-use crate::protocol_utils::fctp::ui_emit_fctp_message;
-use crate::protocol_utils::fctp_me;
-use crate::protocol_utils::fctp_secure::get_e2ee_pub;
-use crate::protocol_utils::fctp_secure::set_e2ee;
 use aes_gcm::{Aes256Gcm, Key, KeyInit};
+use crypt::asymmetric;
+use crypt::symmetric;
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
+use protocol_utils::fctp;
+use protocol_utils::fctp::get_server_id;
+use protocol_utils::fctp::get_tmp_key;
+use protocol_utils::fctp::ui_emit_fctp_message;
+use protocol_utils::fctp_me;
+use protocol_utils::fctp_secure::get_e2ee_pub;
+use protocol_utils::fctp_secure::set_e2ee;
 use regex::Regex;
 use sha2::digest::generic_array::GenericArray;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,7 +93,8 @@ async fn ui_command_send_fctp_message(
         Ok(())
     } else {
         //Message handling
-        protocol_utils::fctp::LAST_902_ACK.store(false, Ordering::Relaxed);
+        protocol_utils::fctp::LAST_ACK.store(false, Ordering::Relaxed);
+        protocol_utils::fctp::REQUEST_ERROR.store(false, Ordering::Relaxed);
 
         let packet = fctp::encapsulate_to_fctp(
             902,
@@ -109,7 +110,7 @@ async fn ui_command_send_fctp_message(
         } else {
             return Err("Channel sender not initialized".into());
         }
-        while !protocol_utils::fctp::LAST_902_ACK.load(Ordering::Relaxed) {
+        while !fctp::LAST_ACK.load(Ordering::Relaxed) {
             sleep(Duration::from_millis(100)).await;
         }
         match crypt::asymmetric::encrypt(&get_tmp_key(), &message.trim().as_bytes()) {
@@ -126,17 +127,19 @@ async fn ui_command_send_fctp_message(
                     tx.send(packet)
                         .await
                         .map_err(|e| format!("Failed to send packet: {}", e))?;
-                    let formatted_msg = format!("[You] {}", message.trim());
-                    ui_emit_fctp_message(&app, formatted_msg);
+                    if !fctp::REQUEST_ERROR.load(Ordering::Relaxed) {
+                        let formatted_msg = format!("[You] {}", message.trim());
+                        ui_emit_fctp_message(&app, formatted_msg);
+                    }
                 } else {
                     return Err("Channel sender not initialized".into());
                 }
-                Ok(())
             }
             Err(err) => {
                 return Err(format!("Encryption error: {:?}", err));
             }
         }
+        Ok(())
     }
 }
 
@@ -475,17 +478,13 @@ mod tests {
     fn test_symmetric_encryption() {
         let key = symmetric::keygen();
 
-        match symmetric::encrypt("test", &key) {
-            Ok(encrypted) => {
-                println!("Encrypted: {}", encrypted);
-                match symmetric::decrypt(&encrypted, &key) {
-                    Ok(decrypted) => {
-                        println!("Decrypted: {}", decrypted);
-                        assert_eq!(decrypted, "test");
-                    }
-                    Err(e) => panic!("Decryption error: {}", e),
+        match symmetric::encrypt_binary("test", &key) {
+            Ok(encrypted) => match symmetric::decrypt_binary(&encrypted, &key) {
+                Ok(decrypted) => {
+                    assert_eq!(String::from_utf8_lossy(&decrypted), "test");
                 }
-            }
+                Err(e) => panic!("Decryption error: {}", e),
+            },
             Err(e) => panic!("Encryption error: {}", e),
         }
     }
@@ -500,7 +499,6 @@ mod tests {
             Ok(encrypted) => match asymmetric::decrypt(&rec_sec, &encrypted) {
                 Ok(decrypted) => {
                     let result = String::from_utf8_lossy(&decrypted);
-                    println!("Decrypted: {}", result);
                     assert_eq!(result, "test");
                 }
                 Err(e) => panic!("Decryption error: {}", e),
