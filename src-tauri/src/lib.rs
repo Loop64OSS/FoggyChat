@@ -120,11 +120,10 @@ async fn ui_command_send_fctp_message(
                 sleep(Duration::from_millis(100)).await;
             }
         }
-
-        match crypt::asymmetric::encrypt(
-            &get_pk_from_e2ee_key_table(recipient.trim()).unwrap(),
-            &message.trim().as_bytes(),
-        ) {
+        let Some(pk) = get_pk_from_e2ee_key_table(recipient.trim()) else {
+            return Ok(());
+        };
+        match crypt::asymmetric::encrypt(&pk, &message.trim().as_bytes()) {
             Ok(msg) => {
                 let packet = fctp::encapsulate_to_fctp(
                     200,

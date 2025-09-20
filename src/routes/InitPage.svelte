@@ -157,7 +157,7 @@
         <div class=" mx-2">
             <div class="flex items-center gap-4 mb-4">
                 <p class="text-2xl">FoggyChat</p>
-                <p class="text">DEV/1</p>
+                <p class="text">DEV/2.1</p>
             </div>
             <form on:submit|preventDefault={handleConnect}>
                 <div class="flex flex-col">
