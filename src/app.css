@@ -8,7 +8,6 @@
 @import '@skeletonlabs/skeleton/themes/rose';
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
-
 * {
     -webkit-tap-highlight-color: transparent;
     user-select: none;
