@@ -9,7 +9,6 @@ use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
 use protocol_utils::fctp;
 use protocol_utils::fctp::get_server_id;
-use protocol_utils::fctp::get_tmp_key;
 use protocol_utils::fctp::ui_emit_fctp_message;
 use protocol_utils::fctp_me;
 use protocol_utils::fctp_secure::get_e2ee_pub;
@@ -27,6 +26,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, Instant};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::protocol_utils::fctp::get_current_recipient;
+use crate::protocol_utils::fctp::set_current_recipient;
+use crate::protocol_utils::fctp_secure::get_pk_from_e2ee_key_table;
+use crate::protocol_utils::fctp_secure::has_pk_in_e2ee_key_table;
+use crate::protocol_utils::fctp_secure::E2EE_KEY_TABLE;
 use crate::protocol_utils::fctp_secure::{
     get_exchange_pub, get_exchange_sec, get_session_key, set_exchange, set_session_key,
 };
@@ -96,24 +100,31 @@ async fn ui_command_send_fctp_message(
         protocol_utils::fctp::LAST_ACK.store(false, Ordering::Relaxed);
         protocol_utils::fctp::REQUEST_ERROR.store(false, Ordering::Relaxed);
 
-        let packet = fctp::encapsulate_to_fctp(
-            902,
-            &fctp_me::get_id(),
-            recipient.trim(),
-            &get_server_id(),
-            get_session_key(),
-        );
-        if let Some(tx) = &*TX.lock().await {
-            tx.send(packet)
-                .await
-                .map_err(|e| format!("Failed to send packet: {}", e))?;
-        } else {
-            return Err("Channel sender not initialized".into());
+        set_current_recipient(recipient.trim());
+        if !has_pk_in_e2ee_key_table(&get_current_recipient().trim()) {
+            let packet = fctp::encapsulate_to_fctp(
+                902,
+                &fctp_me::get_id(),
+                recipient.trim(),
+                &get_server_id(),
+                get_session_key(),
+            );
+            if let Some(tx) = &*TX.lock().await {
+                tx.send(packet)
+                    .await
+                    .map_err(|e| format!("Failed to send packet: {}", e))?;
+            } else {
+                return Err("Channel sender not initialized".into());
+            }
+            while !fctp::LAST_ACK.load(Ordering::Relaxed) {
+                sleep(Duration::from_millis(100)).await;
+            }
         }
-        while !fctp::LAST_ACK.load(Ordering::Relaxed) {
-            sleep(Duration::from_millis(100)).await;
-        }
-        match crypt::asymmetric::encrypt(&get_tmp_key(), &message.trim().as_bytes()) {
+
+        match crypt::asymmetric::encrypt(
+            &get_pk_from_e2ee_key_table(recipient.trim()).unwrap(),
+            &message.trim().as_bytes(),
+        ) {
             Ok(msg) => {
                 let packet = fctp::encapsulate_to_fctp(
                     200,
@@ -405,6 +416,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                 {
                     set_session_key(Key::<Aes256Gcm>::default());
                     set_exchange(PublicKey::from([0u8; 32]), StaticSecret::from([0u8; 32]));
+                    E2EE_KEY_TABLE.write().expect("Lock Poisoned").clear();
                     *TX.lock().await = None;
                     abort_all_tasks().await;
                     ui_emit_status(app, format!("USER::DISCONNECT"));

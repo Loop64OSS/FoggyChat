@@ -1,4 +1,4 @@
-use std::sync::RwLock;
+use std::{collections::HashMap, sync::RwLock};
 
 use aes_gcm::{Aes256Gcm, Key};
 use lazy_static::lazy_static;
@@ -10,6 +10,7 @@ lazy_static! {
     static ref SESSION_KEY: RwLock<Key<Aes256Gcm>> = RwLock::new(Key::<Aes256Gcm>::default());
     static ref E2EE_PUB: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
     static ref E2EE_SEC: RwLock<StaticSecret> = RwLock::new(StaticSecret::from([0u8; 32]));
+    pub static ref E2EE_KEY_TABLE: RwLock<HashMap<String, PublicKey>> = RwLock::new(HashMap::new());
 }
 //EXCHANGE
 pub fn set_exchange(new_pubkey: PublicKey, new_sec: StaticSecret) {
@@ -45,4 +46,18 @@ pub fn get_e2ee_pub() -> PublicKey {
 }
 pub fn get_e2ee_sec() -> StaticSecret {
     E2EE_SEC.read().expect("Lock poisoned").clone()
+}
+
+pub fn get_pk_from_e2ee_key_table(username: &str) -> Option<PublicKey> {
+    E2EE_KEY_TABLE
+        .read()
+        .expect("Failed to acquire read lock")
+        .get(username)
+        .cloned()
+}
+pub fn has_pk_in_e2ee_key_table(username: &str) -> bool {
+    E2EE_KEY_TABLE
+        .read()
+        .expect("Failed to acquire read lock")
+        .contains_key(username)
 }
