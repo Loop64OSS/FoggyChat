@@ -17,7 +17,7 @@ use crate::{
     crypt::{self, symmetric, utils::base64_decode},
     protocol_utils::{
         self, fctp,
-        fctp_secure::{get_e2ee_pub, get_session_key},
+        fctp_secure::{self, get_e2ee_pub, get_session_key, E2EE_KEY_TABLE},
     },
 };
 
@@ -35,6 +35,7 @@ pub struct FctpMessage {
 lazy_static! {
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
     static ref E2EE_SAVED_KEY: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
+    static ref CURRENT_RECIPIENT: RwLock<String> = RwLock::new(String::new());
 }
 pub static LAST_ACK: AtomicBool = AtomicBool::new(false);
 pub static REQUEST_ERROR: AtomicBool = AtomicBool::new(false);
@@ -47,15 +48,15 @@ pub fn set_server_id(new_id: &str) {
 pub fn get_server_id() -> String {
     SERVER_ID.read().expect("Lock poisoned").clone()
 }
-
-pub fn save_tmp_key(new_key: PublicKey) {
-    let mut key = E2EE_SAVED_KEY.write().expect("Lock poisoned");
-    *key = new_key;
+pub fn set_current_recipient(new_username: &str) {
+    let mut username = CURRENT_RECIPIENT.write().expect("Lock poisoned");
+    *username = new_username.to_string();
 }
 
-pub fn get_tmp_key() -> PublicKey {
-    E2EE_SAVED_KEY.read().expect("Lock poisoned").clone()
+pub fn get_current_recipient() -> String {
+    CURRENT_RECIPIENT.read().expect("Lock poisoned").clone()
 }
+
 /*
     FCTP message processing with binary encryption
 */
@@ -196,14 +197,18 @@ pub async fn process_fctp_stream(
                 }
             }
             902 => {
-                let tmp_key_bytes =
+                let recipient_e2ee_key_bytes =
                     base64_decode(&fctp_message.body.trim()).expect("Base64 decode failed");
-                let tmp_key_array: [u8; 32] = tmp_key_bytes
+                let recipient_e2ee_key_array: [u8; 32] = recipient_e2ee_key_bytes
                     .as_slice()
                     .try_into()
                     .expect("Invalid key length");
-                let tmp_key = PublicKey::from(tmp_key_array);
-                save_tmp_key(tmp_key);
+                let recipient_e2ee_key = PublicKey::from(recipient_e2ee_key_array);
+                fctp_secure::E2EE_KEY_TABLE
+                    .write()
+                    .expect("Lock poisoned")
+                    .insert(get_current_recipient(), recipient_e2ee_key);
+
                 LAST_ACK.store(true, Ordering::Relaxed);
             }
             11 => {
