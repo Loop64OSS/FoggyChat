@@ -85,28 +85,28 @@
             sidebarOpen = false;
         }
     }
-
     const scrollToBottom = async (obj: HTMLDivElement) => {
         obj.scroll({ top: obj.scrollHeight, behavior: "smooth" });
     };
-
-    async function addMessage(text: string) {
-        let wasAtBottom =
-            messagesContainer.scrollHeight -
-                messagesContainer.scrollTop -
-                messagesContainer.clientHeight <
-            80;
-        messages = [...messages, text];
-        await tick();
-        if (wasAtBottom) {
-            scrollToBottom(messagesContainer);
-        }
-    }
-
     appWebview.listen<string>("fctp-message", (event) => {
         addMessage(event.payload);
         console.log(event.payload);
     });
+    async function addMessage(text: string) {
+        let wasAtBottom = false;
+        if (messagesContainer) {
+            wasAtBottom =
+                messagesContainer.scrollHeight -
+                    messagesContainer.scrollTop -
+                    messagesContainer.clientHeight <
+                80;
+        }
+        messages = [...messages, text];
+        await tick();
+        if (wasAtBottom && messagesContainer) {
+            scrollToBottom(messagesContainer);
+        }
+    }
 
     function disconnectFromServer() {
         sendStatus("USER::DISCONNECT");

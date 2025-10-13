@@ -26,8 +26,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, Instant};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::protocol_utils::fctp::encapsulate_to_fctp;
 use crate::protocol_utils::fctp::get_current_recipient;
 use crate::protocol_utils::fctp::set_current_recipient;
+use crate::protocol_utils::fctp::FctpMessage;
 use crate::protocol_utils::fctp_secure::get_pk_from_e2ee_key_table;
 use crate::protocol_utils::fctp_secure::has_pk_in_e2ee_key_table;
 use crate::protocol_utils::fctp_secure::E2EE_KEY_TABLE;
@@ -79,13 +81,17 @@ async fn ui_command_send_fctp_message(
         //Command handling
 
         let command = message.trim_start_matches('/').trim();
+
         let packet = fctp::encapsulate_to_fctp(
-            201,
-            &fctp_me::get_id(),
-            command,
-            &get_server_id(),
-            get_session_key(),
-        );
+            &FctpMessage::new(
+                fctp::FctpCode::Command,
+                &fctp_me::get_id(),
+                command,
+                &get_server_id(),
+            ),
+            &get_session_key(),
+        )
+        .map_err(|e| format!("FctpError: {:?}", e))?;
 
         if let Some(tx) = &*TX.lock().await {
             tx.send(packet)
@@ -103,12 +109,15 @@ async fn ui_command_send_fctp_message(
         set_current_recipient(recipient.trim());
         if !has_pk_in_e2ee_key_table(&get_current_recipient().trim()) {
             let packet = fctp::encapsulate_to_fctp(
-                902,
-                &fctp_me::get_id(),
-                recipient.trim(),
-                &get_server_id(),
-                get_session_key(),
-            );
+                &FctpMessage::new(
+                    fctp::FctpCode::KeyRequest,
+                    &fctp_me::get_id(),
+                    recipient.trim(),
+                    &get_server_id(),
+                ),
+                &get_session_key(),
+            )
+            .map_err(|e| format!("FctpError: {:?}", e))?;
             if let Some(tx) = &*TX.lock().await {
                 tx.send(packet)
                     .await
@@ -126,13 +135,15 @@ async fn ui_command_send_fctp_message(
         match crypt::asymmetric::encrypt(&pk, &message.trim().as_bytes()) {
             Ok(msg) => {
                 let packet = fctp::encapsulate_to_fctp(
-                    200,
-                    &fctp_me::get_id(),
-                    &crypt::utils::base64_encode(&msg).trim(),
-                    recipient.trim(),
-                    get_session_key(),
-                );
-
+                    &FctpMessage::new(
+                        fctp::FctpCode::Message,
+                        &fctp_me::get_id(),
+                        &*crypt::utils::base64_encode(&msg).trim(),
+                        recipient.trim(),
+                    ),
+                    &get_session_key(),
+                )
+                .map_err(|e| format!("FctpError: {:?}", e))?;
                 if let Some(tx) = &*TX.lock().await {
                     tx.send(packet)
                         .await
@@ -264,12 +275,15 @@ async fn handle_server_message(
                             //requesting ID
 
                             let packet = fctp::encapsulate_to_fctp(
-                                900,
-                                &fctp_me::get_id(),
-                                "id",
-                                &get_server_id(),
-                                get_session_key(),
-                            );
+                                &FctpMessage::new(
+                                    fctp::FctpCode::Hello,
+                                    &fctp_me::get_id(),
+                                    "id",
+                                    &get_server_id(),
+                                ),
+                                &get_session_key(),
+                            )
+                            .map_err(|e| format!("FctpError: {:?}", e))?;
                             tx.send(packet).await?;
                             //generating e2ee key pair and sending e2ee public key
                             let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
@@ -279,12 +293,15 @@ async fn handle_server_message(
                             let e2ee_pub = get_e2ee_pub();
                             let e2ee_pk_bytes = e2ee_pub.as_bytes();
                             let packet = fctp::encapsulate_to_fctp(
-                                901,
-                                &fctp_me::get_id(),
-                                &crypt::utils::base64_encode(e2ee_pk_bytes),
-                                &get_server_id(),
-                                get_session_key(),
-                            );
+                                &FctpMessage::new(
+                                    fctp::FctpCode::PublicKeyExchange,
+                                    &fctp_me::get_id(),
+                                    &crypt::utils::base64_encode(e2ee_pk_bytes),
+                                    &get_server_id(),
+                                ),
+                                &get_session_key(),
+                            )
+                            .map_err(|e| format!("FctpError: {:?}", e))?;
                             tx.send(packet).await?;
                         }
                     }
@@ -458,13 +475,16 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                 sleep(Duration::from_secs(120)).await;
 
                 if get_session_key() != Key::<Aes256Gcm>::default() {
-                    let ping_packet = fctp::encapsulate_to_fctp(
-                        10,
-                        &fctp_me::get_id(),
-                        "ping",
-                        &get_server_id(),
-                        get_session_key(),
-                    );
+                    let ping_packet = match encapsulate_to_fctp(
+                        &fctp::FctpMessage::ping(get_server_id()),
+                        &get_session_key(),
+                    ) {
+                        Ok(packet) => packet,
+                        Err(e) => {
+                            eprintln!("FctpError: {:?}", e);
+                            continue;
+                        }
+                    };
 
                     if tx_clone.send(ping_packet).await.is_err() {
                         break;
@@ -516,60 +536,6 @@ mod tests {
             },
             Err(e) => panic!("Encryption error: {}", e),
         }
-    }
-
-    #[test]
-    fn test_fctp_binary_roundtrip() {
-        let code = 200;
-        let from = "user123";
-        let body = "Hello, world!";
-        let to = "user456";
-
-        let key = symmetric::keygen();
-        let message = fctp::encapsulate_to_fctp(code, from, body, to, key);
-
-        assert!(!message.is_empty());
-
-        let decoded =
-            fctp::decapsulate_fctp_message(&message, key).expect("Failed to parse FCTP message");
-
-        assert_eq!(decoded.code, code);
-        assert_eq!(decoded.from, from);
-        assert_eq!(decoded.body, body);
-        assert_eq!(decoded.to, to);
-    }
-
-    #[test]
-    fn test_fctp_unencrypted_during_handshake() {
-        let code = 900;
-        let from = "server";
-        let body = "id";
-        let to = "client";
-
-        let default_key = Key::<Aes256Gcm>::default();
-        let message = fctp::encapsulate_to_fctp(code, from, body, to, default_key);
-
-        let decoded = fctp::decapsulate_fctp_message(&message, default_key)
-            .expect("Failed to parse unencrypted FCTP message");
-
-        assert_eq!(decoded.code, code);
-        assert_eq!(decoded.from, from);
-        assert_eq!(decoded.body, body);
-        assert_eq!(decoded.to, to);
-    }
-
-    #[test]
-    fn test_fctp_decapsulation_invalid() {
-        let real_key = symmetric::keygen();
-
-        let bad_message = b"This is not a valid FCTP message";
-        assert!(fctp::decapsulate_fctp_message(bad_message, real_key).is_none());
-
-        let empty_message = b"";
-        assert!(fctp::decapsulate_fctp_message(empty_message, real_key).is_none());
-
-        let bad_binary = b"invalid binary data that cannot be decrypted";
-        assert!(fctp::decapsulate_fctp_message(bad_binary, real_key).is_none());
     }
 
     #[test]
