@@ -4,17 +4,14 @@ mod protocol_utils;
 
 use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use crypt::asymmetric;
-use crypt::symmetric;
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
 use protocol_utils::fctp;
-use protocol_utils::fctp::get_server_id;
-use protocol_utils::fctp::ui_emit_fctp_message;
 use protocol_utils::fctp_me;
-use protocol_utils::fctp_secure::get_e2ee_pub;
-use protocol_utils::fctp_secure::set_e2ee;
-use regex::Regex;
-use sha2::digest::generic_array::GenericArray;
+use protocol_utils::fctp_secure::{
+    get_e2ee_pub, get_exchange_pub, get_exchange_sec, get_session_key, set_e2ee, set_exchange,
+    set_session_key, E2EE_KEY_TABLE,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,28 +20,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, timeout, Instant};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::protocol_utils::fctp::encapsulate_to_fctp;
-use crate::protocol_utils::fctp::get_current_recipient;
-use crate::protocol_utils::fctp::set_current_recipient;
-use crate::protocol_utils::fctp::FctpMessage;
-use crate::protocol_utils::fctp_secure::get_pk_from_e2ee_key_table;
-use crate::protocol_utils::fctp_secure::has_pk_in_e2ee_key_table;
-use crate::protocol_utils::fctp_secure::E2EE_KEY_TABLE;
-use crate::protocol_utils::fctp_secure::{
-    get_exchange_pub, get_exchange_sec, get_session_key, set_exchange, set_session_key,
-};
+use crate::protocol_utils::fctp::LAST_ACK;
+use crate::protocol_utils::fctp_secure::handle_non_existent_e2ee_key;
 
+// Constants
 const BUFFER_SIZE: usize = 8192;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const PONG_TIMEOUT_SECS: u64 = 240;
+const PING_INTERVAL_SECS: u64 = 120;
 
+// Global state
 static TASKS: Lazy<Arc<Mutex<Vec<JoinHandle<()>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 static TX: Lazy<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 
-//Tauri app starter
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(any(
@@ -77,101 +70,113 @@ async fn ui_command_send_fctp_message(
     recipient: &str,
     app: AppHandle,
 ) -> Result<(), String> {
-    if message.starts_with("/") {
-        //Command handling
-
-        let command = message.trim_start_matches('/').trim();
-
-        let packet = fctp::encapsulate_to_fctp(
-            &FctpMessage::new(
-                fctp::FctpCode::Command,
-                &fctp_me::get_id(),
-                command,
-                &get_server_id(),
-            ),
-            &get_session_key(),
-        )
-        .map_err(|e| format!("FctpError: {:?}", e))?;
-
-        if let Some(tx) = &*TX.lock().await {
-            tx.send(packet)
-                .await
-                .map_err(|e| format!("Failed to send packet: {}", e))?;
-        } else {
-            return Err("Channel sender not initialized".into());
-        }
-        Ok(())
-    } else {
-        //Message handling
-        protocol_utils::fctp::LAST_ACK.store(false, Ordering::Relaxed);
-        protocol_utils::fctp::REQUEST_ERROR.store(false, Ordering::Relaxed);
-
-        set_current_recipient(recipient.trim());
-        if !has_pk_in_e2ee_key_table(&get_current_recipient().trim()) {
-            let packet = fctp::encapsulate_to_fctp(
-                &FctpMessage::new(
-                    fctp::FctpCode::KeyRequest,
-                    &fctp_me::get_id(),
-                    recipient.trim(),
-                    &get_server_id(),
-                ),
-                &get_session_key(),
-            )
-            .map_err(|e| format!("FctpError: {:?}", e))?;
-            if let Some(tx) = &*TX.lock().await {
-                tx.send(packet)
-                    .await
-                    .map_err(|e| format!("Failed to send packet: {}", e))?;
-            } else {
-                return Err("Channel sender not initialized".into());
-            }
-            while !fctp::LAST_ACK.load(Ordering::Relaxed) {
-                sleep(Duration::from_millis(100)).await;
-            }
-        }
-        let Some(pk) = get_pk_from_e2ee_key_table(recipient.trim()) else {
-            return Ok(());
-        };
-        match crypt::asymmetric::encrypt(&pk, &message.trim().as_bytes()) {
-            Ok(msg) => {
-                let packet = fctp::encapsulate_to_fctp(
-                    &FctpMessage::new(
-                        fctp::FctpCode::Message,
-                        &fctp_me::get_id(),
-                        &*crypt::utils::base64_encode(&msg).trim(),
-                        recipient.trim(),
-                    ),
-                    &get_session_key(),
-                )
-                .map_err(|e| format!("FctpError: {:?}", e))?;
-                if let Some(tx) = &*TX.lock().await {
-                    tx.send(packet)
-                        .await
-                        .map_err(|e| format!("Failed to send packet: {}", e))?;
-                    if !fctp::REQUEST_ERROR.load(Ordering::Relaxed) {
-                        let formatted_msg = format!("[You] {}", message.trim());
-                        ui_emit_fctp_message(&app, formatted_msg);
-                    }
-                } else {
-                    return Err("Channel sender not initialized".into());
-                }
-            }
-            Err(err) => {
-                return Err(format!("Encryption error: {:?}", err));
-            }
-        }
-        Ok(())
+    // Validate inputs
+    if message.is_empty() {
+        return Err("Message cannot be empty".into());
     }
+    if recipient.is_empty() {
+        return Err("Recipient cannot be empty".into());
+    }
+
+    if message.starts_with("/") {
+        handle_command_message(message, &app).await
+    } else {
+        handle_regular_message(message, recipient, &app).await
+    }
+}
+
+async fn handle_command_message(message: &str, _app: &AppHandle) -> Result<(), String> {
+    let command = message.trim_start_matches('/').trim();
+
+    let server_id = fctp::get_server_id().map_err(|e| format!("Failed to get server ID: {}", e))?;
+
+    let packet = fctp::encapsulate_to_fctp(
+        &fctp::FctpMessage::new(
+            fctp::FctpCode::Command,
+            fctp_me::get_id(),
+            command,
+            server_id,
+        ),
+        &get_session_key(),
+    )
+    .map_err(|e| format!("FctpError: {:?}", e))?;
+
+    send_packet(packet).await
+}
+
+async fn handle_regular_message(
+    message: &str,
+    recipient: &str,
+    app: &AppHandle,
+) -> Result<(), String> {
+    fctp::LAST_ACK.store(false, Ordering::Relaxed);
+    fctp::REQUEST_ERROR.store(false, Ordering::Relaxed);
+
+    fctp::set_current_recipient(recipient.trim())
+        .map_err(|e| format!("Failed to set recipient: {}", e))?;
+
+    // Request public key if not cached
+    if !protocol_utils::fctp_secure::has_pk_in_e2ee_key_table(recipient.trim()) {
+        let _ = handle_non_existent_e2ee_key(recipient.trim()).await;
+    }
+
+    let pk = protocol_utils::fctp_secure::get_pk_from_e2ee_key_table(recipient.trim())
+        .ok_or("Failed to retrieve recipient's public key")?;
+
+    // Encrypt and send
+    let encrypted = crypt::asymmetric::encrypt(&pk, message.trim().as_bytes())
+        .map_err(|e| format!("Encryption error: {:?}", e))?;
+
+    let _server_id =
+        fctp::get_server_id().map_err(|e| format!("Failed to get server ID: {}", e))?;
+
+    let packet = fctp::encapsulate_to_fctp(
+        &fctp::FctpMessage::new(
+            fctp::FctpCode::Message,
+            fctp_me::get_id(),
+            crypt::utils::base64_encode(&encrypted).trim(),
+            recipient.trim(),
+        ),
+        &get_session_key(),
+    )
+    .map_err(|e| format!("FctpError: {:?}", e))?;
+
+    send_packet(packet).await?;
+
+    // Show message in UI if no error occurred
+    if !fctp::REQUEST_ERROR.load(Ordering::Relaxed) {
+        let formatted_msg = format!("[You] {}", message.trim());
+        fctp::ui_emit_fctp_message(app, formatted_msg);
+    }
+
+    Ok(())
+}
+
+async fn send_packet(packet: Vec<u8>) -> Result<(), String> {
+    let tx_guard = TX.lock().await;
+    let tx = tx_guard.as_ref().ok_or("Channel sender not initialized")?;
+
+    tx.send(packet)
+        .await
+        .map_err(|e| format!("Failed to send packet: {}", e))
 }
 
 #[tauri::command]
 fn ui_command_request_connection(address: &str, app: AppHandle) {
-    tauri::async_runtime::spawn(init_connection(app.clone(), address.to_owned()));
+    let address = address.to_owned();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = init_connection(app.clone(), address).await {
+            ui_emit_status(app, format!("E::Connection failed: {}", e));
+        }
+    });
 }
 
 #[tauri::command]
 async fn ui_command_status(input: String) {
-    if input == "USER::FP_MATCH" || input == "USER::DISCONNECT" || input == "USER::FP_MISMATCH" {
+    if matches!(
+        input.as_str(),
+        "USER::FP_MATCH" | "USER::DISCONNECT" | "USER::FP_MISMATCH"
+    ) {
         if let Some(tx) = &*TX.lock().await {
             let _ = tx.send(input.into_bytes()).await;
         } else {
@@ -186,20 +191,14 @@ pub fn ui_emit_status(app: AppHandle, msg: String) {
     }
 }
 
-async fn init_connection(app: AppHandle, server_address: String) {
-    match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(server_address)).await {
-        Ok(Ok(stream)) => {
-            stream_handler(app, stream).await;
-        }
-        Ok(Err(e)) => {
-            ui_emit_status(app, format!("E::Connection error: {}", e));
-            eprintln!("E::Connection error: {}", e);
-        }
-        Err(timeout_err) => {
-            ui_emit_status(app, "E::Timeout occurred".to_string());
-            eprintln!("E::Timeout: {}", timeout_err);
-        }
-    }
+async fn init_connection(app: AppHandle, server_address: String) -> Result<(), String> {
+    let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(&server_address))
+        .await
+        .map_err(|_| "Connection timeout".to_string())?
+        .map_err(|e| format!("Connection error: {}", e))?;
+
+    stream_handler(app, stream).await;
+    Ok(())
 }
 
 async fn abort_all_tasks() {
@@ -209,6 +208,19 @@ async fn abort_all_tasks() {
     }
 }
 
+async fn cleanup_connection(app: AppHandle) {
+    set_session_key(Key::<Aes256Gcm>::default());
+    set_exchange(PublicKey::from([0u8; 32]), StaticSecret::from([0u8; 32]));
+
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        table.clear();
+    }
+
+    *TX.lock().await = None;
+    abort_all_tasks().await;
+    ui_emit_status(app, "USER::DISCONNECT".to_string());
+}
+
 async fn handle_server_message(
     data: &[u8],
     app: &AppHandle,
@@ -216,105 +228,19 @@ async fn handle_server_message(
     fp_verified: &Arc<AtomicBool>,
     last_pong: &Arc<Mutex<Instant>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if get_session_key() == Key::<Aes256Gcm>::default() {
-        if get_exchange_pub() == PublicKey::from([0u8; 32]) {
-            //Certificate Public key
-            let message_str = String::from_utf8_lossy(data).trim().to_string();
-            match crypt::utils::base64_decode(&message_str) {
-                Ok(decoded) => {
-                    if decoded.len() == 32 {
-                        let cert_pub = PublicKey::from(<[u8; 32]>::try_from(decoded.as_slice())?);
-                        //Ask user to verify certificate fingerprint
-                        ui_emit_status(
-                            app.clone(),
-                            format!("USER::VERIFY_FP::{}", crypt::utils::blake3_hash(&decoded)),
-                        );
-                        //wait for response
-                        while !fp_verified.load(Ordering::Relaxed) {
-                            sleep(Duration::from_millis(100)).await;
-                        }
-                        //generate exchange key
-                        let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
-                        let rec_sec = StaticSecret::from(rec_sec_bytes);
-                        let rec_pub = PublicKey::from(rec_pub_bytes);
-                        set_exchange(rec_pub, rec_sec);
-
-                        //encrypt exchange key with certificate
-                        match asymmetric::encrypt(&cert_pub, rec_pub.as_bytes()) {
-                            Ok(encrypted) => {
-                                let encoded = crypt::utils::base64_encode(&encrypted);
-                                tx.send(format!("{}\r\n\r\n", encoded).into_bytes()).await?;
-                                ui_emit_status(app.clone(), "OK::CON_ESTABLISHED".to_string());
-                            }
-                            Err(e) => eprintln!("Encryption error: {}", e),
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Decoding error: {}", e),
-            }
-        } else {
-            //session key
-            let message_str = String::from_utf8_lossy(data).trim().to_string();
-            match crypt::utils::base64_decode(&message_str) {
-                Ok(decoded) => match asymmetric::decrypt(&get_exchange_sec(), &decoded) {
-                    Ok(decrypted) => {
-                        if decrypted.len() == 32 {
-                            let key_array: [u8; 32] = decrypted
-                                .try_into()
-                                .map_err(|e| format!("An Error Occurred: {:?}", e))?;
-                            let session_key = Key::<Aes256Gcm>::from_slice(&key_array).clone();
-                            //saving session key
-                            set_session_key(session_key);
-
-                            println!(
-                                "Session key established: {}",
-                                crypt::utils::base64_encode(get_session_key().as_slice())
-                            );
-                            //Wait for ui
-                            sleep(Duration::from_millis(100)).await;
-                            //requesting ID
-
-                            let packet = fctp::encapsulate_to_fctp(
-                                &FctpMessage::new(
-                                    fctp::FctpCode::Hello,
-                                    &fctp_me::get_id(),
-                                    "id",
-                                    &get_server_id(),
-                                ),
-                                &get_session_key(),
-                            )
-                            .map_err(|e| format!("FctpError: {:?}", e))?;
-                            tx.send(packet).await?;
-                            //generating e2ee key pair and sending e2ee public key
-                            let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
-                            let rec_sec = StaticSecret::from(rec_sec_bytes);
-                            let rec_pub = PublicKey::from(rec_pub_bytes);
-                            set_e2ee(rec_pub, rec_sec);
-                            let e2ee_pub = get_e2ee_pub();
-                            let e2ee_pk_bytes = e2ee_pub.as_bytes();
-                            let packet = fctp::encapsulate_to_fctp(
-                                &FctpMessage::new(
-                                    fctp::FctpCode::PublicKeyExchange,
-                                    &fctp_me::get_id(),
-                                    &crypt::utils::base64_encode(e2ee_pk_bytes),
-                                    &get_server_id(),
-                                ),
-                                &get_session_key(),
-                            )
-                            .map_err(|e| format!("FctpError: {:?}", e))?;
-                            tx.send(packet).await?;
-                        }
-                    }
-                    Err(e) => eprintln!("Session key decryption error: {:?}", e),
-                },
-                Err(e) => eprintln!("Session key decoding error: {}", e),
-            }
-        }
-    } else {
-        fctp::process_fctp_stream(app.clone(), data, last_pong).await;
+    if data.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
+    // During handshake (no session key), handle raw data
+    // After handshake (session key set), handle FCTP messages
+    if get_session_key() == Key::<Aes256Gcm>::default() {
+        protocol_utils::fctp_secure::handle_handshake_message(data, app, tx, fp_verified).await
+    } else {
+        // This is an encrypted FCTP message
+        fctp::process_fctp_stream(app.clone(), data, last_pong).await;
+        Ok(())
+    }
 }
 
 async fn stream_handler(app: AppHandle, stream: TcpStream) {
@@ -326,6 +252,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
     TX.lock().await.replace(tx.clone());
 
+    // Reader task
     {
         let tx_clone = tx.clone();
         let app_clone = app.clone();
@@ -333,8 +260,8 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
         let handle = tokio::spawn(async move {
             let mut buffer = [0u8; BUFFER_SIZE];
-            let mut message_buffer = Vec::new();
-            let mut expecting_length = None;
+            let mut message_buffer = Vec::with_capacity(BUFFER_SIZE * 2);
+            let mut expecting_length: Option<usize> = None;
 
             loop {
                 match reader.read(&mut buffer).await {
@@ -344,14 +271,16 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                     }
                     Ok(n) => {
                         if get_session_key() == Key::<Aes256Gcm>::default() {
+                            // Handshake phase
                             let data = &buffer[..n];
                             let text_data = String::from_utf8_lossy(data);
 
                             if text_data.contains("\r\n\r\n") {
                                 for line in text_data.lines() {
-                                    if !line.trim().is_empty() {
+                                    let trimmed = line.trim();
+                                    if !trimmed.is_empty() {
                                         if let Err(e) = handle_server_message(
-                                            line.trim().as_bytes(),
+                                            trimmed.as_bytes(),
                                             &app_clone,
                                             &tx_clone,
                                             &fp_verified_clone,
@@ -359,20 +288,38 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                         )
                                         .await
                                         {
-                                            eprintln!("Error handling handshake message: {}", e);
+                                            eprintln!("Error handling handshake: {}", e);
                                         }
                                         break;
                                     }
                                 }
                             }
                         } else {
+                            // Encrypted message phase
                             message_buffer.extend_from_slice(&buffer[..n]);
+
+                            // Prevent buffer overflow
+                            if message_buffer.len() > BUFFER_SIZE * 4 {
+                                eprintln!("Message buffer overflow, clearing");
+                                message_buffer.clear();
+                                expecting_length = None;
+                                continue;
+                            }
 
                             while message_buffer.len() >= 4 {
                                 if expecting_length.is_none() {
                                     let length_bytes: [u8; 4] =
                                         message_buffer[..4].try_into().unwrap();
                                     let message_length = u32::from_be_bytes(length_bytes) as usize;
+
+                                    // Sanity check
+                                    if message_length > BUFFER_SIZE * 4 {
+                                        eprintln!("Invalid message length: {}", message_length);
+                                        message_buffer.clear();
+                                        expecting_length = None;
+                                        break;
+                                    }
+
                                     expecting_length = Some(message_length);
                                 }
 
@@ -409,33 +356,29 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                     }
                 }
             }
+
+            // Trigger disconnect
             if let Some(tx) = &*TX.lock().await {
                 let _ = tx.send("USER::DISCONNECT".as_bytes().to_vec()).await;
-            } else {
-                eprintln!("Channel sender not initialized");
             }
         });
         TASKS.lock().await.push(handle);
     }
 
+    // Writer task
     {
+        let app_clone = app.clone();
         let fp_verified_clone = fp_verified.clone();
 
         let handle = tokio::spawn(async move {
             let mut writer = writer;
             while let Some(msg) = rx.recv().await {
-                if msg == "USER::FP_MATCH".as_bytes() {
+                // Handle control messages
+                if msg == b"USER::FP_MATCH" {
                     fp_verified_clone.store(true, Ordering::Relaxed);
                     continue;
-                } else if msg == "USER::DISCONNECT".as_bytes()
-                    || msg == "USER::FP_MISMATCH".as_bytes()
-                {
-                    set_session_key(Key::<Aes256Gcm>::default());
-                    set_exchange(PublicKey::from([0u8; 32]), StaticSecret::from([0u8; 32]));
-                    E2EE_KEY_TABLE.write().expect("Lock Poisoned").clear();
-                    *TX.lock().await = None;
-                    abort_all_tasks().await;
-                    ui_emit_status(app, format!("USER::DISCONNECT"));
+                } else if msg == b"USER::DISCONNECT" || msg == b"USER::FP_MISMATCH" {
+                    cleanup_connection(app_clone.clone()).await;
                     return;
                 }
 
@@ -448,6 +391,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
+    // Pong monitor task
     {
         let last_pong_clone = last_pong.clone();
         let handle = tokio::spawn(async move {
@@ -457,7 +401,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
                 if get_session_key() == Key::<Aes256Gcm>::default() {
                     *last_pong_clone.lock().await = Instant::now();
-                } else if elapsed.as_secs() > 240 {
+                } else if elapsed.as_secs() > PONG_TIMEOUT_SECS {
                     println!(
                         "Server not responding, last pong: {} ms ago",
                         elapsed.as_millis()
@@ -468,15 +412,17 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
+    // Ping task
     {
         let tx_clone = tx.clone();
         let handle = tokio::spawn(async move {
             loop {
-                sleep(Duration::from_secs(120)).await;
+                sleep(Duration::from_secs(PING_INTERVAL_SECS)).await;
 
                 if get_session_key() != Key::<Aes256Gcm>::default() {
-                    let ping_packet = match encapsulate_to_fctp(
-                        &fctp::FctpMessage::ping(get_server_id()),
+                    let server_id = fctp::get_server_id().unwrap_or_default();
+                    let ping_packet = match fctp::encapsulate_to_fctp(
+                        &fctp::FctpMessage::ping(server_id),
                         &get_session_key(),
                     ) {
                         Ok(packet) => packet,
@@ -495,6 +441,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
+    // Keep connection alive
     loop {
         sleep(Duration::from_secs(60)).await;
     }
@@ -503,21 +450,20 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypt::symmetric;
     use x25519_dalek::{PublicKey, StaticSecret};
 
     #[test]
     fn test_symmetric_encryption() {
         let key = symmetric::keygen();
+        let plaintext = "test message";
 
-        match symmetric::encrypt_binary("test", &key) {
-            Ok(encrypted) => match symmetric::decrypt_binary(&encrypted, &key) {
-                Ok(decrypted) => {
-                    assert_eq!(String::from_utf8_lossy(&decrypted), "test");
-                }
-                Err(e) => panic!("Decryption error: {}", e),
-            },
-            Err(e) => panic!("Encryption error: {}", e),
-        }
+        let encrypted =
+            symmetric::encrypt_binary(plaintext, &key).expect("Encryption should succeed");
+        let decrypted =
+            symmetric::decrypt_binary(&encrypted, &key).expect("Decryption should succeed");
+
+        assert_eq!(String::from_utf8_lossy(&decrypted), plaintext);
     }
 
     #[test]
@@ -525,17 +471,14 @@ mod tests {
         let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
         let rec_sec = StaticSecret::from(rec_sec_bytes);
         let rec_pub = PublicKey::from(rec_pub_bytes);
+        let plaintext = b"test message";
 
-        match asymmetric::encrypt(&rec_pub, "test".as_bytes()) {
-            Ok(encrypted) => match asymmetric::decrypt(&rec_sec, &encrypted) {
-                Ok(decrypted) => {
-                    let result = String::from_utf8_lossy(&decrypted);
-                    assert_eq!(result, "test");
-                }
-                Err(e) => panic!("Decryption error: {}", e),
-            },
-            Err(e) => panic!("Encryption error: {}", e),
-        }
+        let encrypted =
+            asymmetric::encrypt(&rec_pub, plaintext).expect("Encryption should succeed");
+        let decrypted =
+            asymmetric::decrypt(&rec_sec, &encrypted).expect("Decryption should succeed");
+
+        assert_eq!(&decrypted[..], plaintext);
     }
 
     #[test]
@@ -543,7 +486,7 @@ mod tests {
         fctp_me::set_id("test_client_id");
         assert_eq!(fctp_me::get_id(), "test_client_id");
 
-        fctp::set_server_id("test_server_id");
-        assert_eq!(fctp::get_server_id(), "test_server_id");
+        fctp::set_server_id("test_server_id").expect("Should set server ID");
+        assert_eq!(fctp::get_server_id().unwrap(), "test_server_id");
     }
 }
