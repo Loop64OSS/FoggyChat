@@ -8,22 +8,24 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::{sync::Mutex, time::Instant};
-use uuid::timestamp;
 use x25519_dalek::PublicKey;
 
 use crate::{
     crypt::{self, symmetric, utils::base64_decode},
     protocol_utils::{
-        self, fctp,
+        self,
         fctp_me::get_id,
-        fctp_secure::{self, get_e2ee_pub, get_session_key, E2EE_KEY_TABLE},
+        fctp_secure::{get_e2ee_sec, get_session_key, E2EE_KEY_TABLE},
     },
 };
 
-//Internal errors
+// Constants
+const PROTOCOL_VERSION: &str = "FoggyChat Transfer Protocol 0.1";
+const MAX_MESSAGE_SIZE: usize = 1_048_576; // 1MB limit
+
+// Errors
 #[derive(Error, Debug)]
 pub enum FctpError {
     #[error("Encryption failed: {0}")]
@@ -34,20 +36,14 @@ pub enum FctpError {
     MalformedMessage(String),
     #[error("Invalid protocol version: {0}")]
     InvalidProtocolVersion(String),
-    #[error("Network error: {0}")]
-    NetworkError(String),
-    #[error("Client not found: {0}")]
-    ClientNotFound(String),
-    #[error("Invalid nickname: {0}")]
-    InvalidNickname(String),
+    #[error("Message too large: {0} bytes (max: {1})")]
+    MessageTooLarge(usize, usize),
 }
-//Statics
+
 type Result<T> = std::result::Result<T, FctpError>;
 
-const PROTOCOL_VERSION: &str = "FoggyChat Transfer Protocol 0.1";
-
 // Protocol codes
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FctpCode {
     Ping = 10,
     Pong = 11,
@@ -81,7 +77,7 @@ impl FctpCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FctpMessage {
     pub code: FctpCode,
     pub from: String,
@@ -103,65 +99,109 @@ impl FctpMessage {
             to: to.into(),
         }
     }
-
+    #[allow(dead_code)]
     pub fn ping(to: impl Into<String>) -> Self {
         Self::new(FctpCode::Ping, get_id(), "ping", to)
     }
-
+    #[allow(dead_code)]
     pub fn pong(to: impl Into<String>) -> Self {
         Self::new(FctpCode::Pong, get_id(), "pong", to)
     }
-
+    #[allow(dead_code)]
     pub fn error(code: FctpCode, message: impl Into<String>, to: impl Into<String>) -> Self {
         Self::new(code, get_id(), message, to)
     }
-}
-/*
-    Set global user ID using lazy_static
-*/
 
+    /// Validate message fields for regular FCTP messages
+    /// Note: Some system messages (like handshake) may have empty fields
+    fn validate(&self) -> Result<()> {
+        // Only validate user-facing messages, not system messages
+        match self.code {
+            FctpCode::Message | FctpCode::Command => {
+                if self.from.is_empty() {
+                    return Err(FctpError::MalformedMessage("Empty 'from' field".into()));
+                }
+                if self.to.is_empty() {
+                    return Err(FctpError::MalformedMessage("Empty 'to' field".into()));
+                }
+            }
+            _ => {
+                // System messages (Hello, Ping, Pong, etc.) are less strict
+                // They may have empty fields during handshake
+            }
+        }
+        Ok(())
+    }
+}
+
+// Global state
 lazy_static! {
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
-    static ref E2EE_SAVED_KEY: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
     static ref CURRENT_RECIPIENT: RwLock<String> = RwLock::new(String::new());
 }
+
 pub static LAST_ACK: AtomicBool = AtomicBool::new(false);
 pub static REQUEST_ERROR: AtomicBool = AtomicBool::new(false);
 
-pub fn set_server_id(new_id: &str) {
-    let mut id = SERVER_ID.write().expect("Lock poisoned");
+pub fn set_server_id(new_id: &str) -> std::result::Result<(), String> {
+    let mut id = SERVER_ID
+        .write()
+        .map_err(|e| format!("Lock poisoned: {}", e))?;
     *id = new_id.to_string();
+    Ok(())
 }
 
-pub fn get_server_id() -> String {
-    SERVER_ID.read().expect("Lock poisoned").clone()
+pub fn get_server_id() -> std::result::Result<String, String> {
+    SERVER_ID
+        .read()
+        .map(|id| id.clone())
+        .map_err(|e| format!("Lock poisoned: {}", e))
 }
-pub fn set_current_recipient(new_username: &str) {
-    let mut username = CURRENT_RECIPIENT.write().expect("Lock poisoned");
+
+pub fn set_current_recipient(new_username: &str) -> std::result::Result<(), String> {
+    let mut username = CURRENT_RECIPIENT
+        .write()
+        .map_err(|e| format!("Lock poisoned: {}", e))?;
     *username = new_username.to_string();
+    Ok(())
 }
 
-pub fn get_current_recipient() -> String {
-    CURRENT_RECIPIENT.read().expect("Lock poisoned").clone()
+pub fn get_current_recipient() -> std::result::Result<String, String> {
+    CURRENT_RECIPIENT
+        .read()
+        .map(|name| name.clone())
+        .map_err(|e| format!("Lock poisoned: {}", e))
 }
 
-/*
-    FCTP message processing with binary encryption
-*/
-// Header tools
+// Message processing
 pub fn encapsulate_to_fctp(message: &FctpMessage, session_key: &Key<Aes256Gcm>) -> Result<Vec<u8>> {
+    // Validate message
+    message.validate()?;
+
     let formatted_message = format!(
         "{}\r\n{}\r\nFrom: {}\r\nBody: {}\r\nTo: {}\r\n\r\n",
         PROTOCOL_VERSION, message.code as i32, message.from, message.body, message.to
     );
+
+    // Check message size
+    if formatted_message.len() > MAX_MESSAGE_SIZE {
+        return Err(FctpError::MessageTooLarge(
+            formatted_message.len(),
+            MAX_MESSAGE_SIZE,
+        ));
+    }
 
     symmetric::encrypt_binary(&formatted_message, session_key)
         .map_err(|e| FctpError::EncryptionFailed(format!("{:?}", e)))
 }
 
 pub fn decapsulate_fctp_message(msg: &[u8], session_key: &Key<Aes256Gcm>) -> Result<FctpMessage> {
+    // Validate input size
+    if msg.len() > MAX_MESSAGE_SIZE {
+        return Err(FctpError::MessageTooLarge(msg.len(), MAX_MESSAGE_SIZE));
+    }
+
     let decrypted_str = if *session_key == Key::<Aes256Gcm>::default() {
-        // Unencrypted message!
         String::from_utf8(msg.to_vec())
             .map_err(|e| FctpError::DecryptionFailed(format!("UTF-8 decode error: {}", e)))?
     } else {
@@ -177,7 +217,7 @@ pub fn decapsulate_fctp_message(msg: &[u8], session_key: &Key<Aes256Gcm>) -> Res
 fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
     let mut lines = message.lines();
 
-    // Check protocol
+    // Validate protocol
     let protocol_line = lines
         .next()
         .ok_or_else(|| FctpError::MalformedMessage("Missing protocol line".to_string()))?;
@@ -186,7 +226,7 @@ fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
         return Err(FctpError::InvalidProtocolVersion(protocol_line.to_string()));
     }
 
-    // parse status code
+    // Parse status code
     let code_str = lines
         .next()
         .ok_or_else(|| FctpError::MalformedMessage("Missing code line".to_string()))?
@@ -199,17 +239,20 @@ fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
     let code = FctpCode::from_i32(code_int)
         .ok_or_else(|| FctpError::MalformedMessage(format!("Unknown code: {}", code_int)))?;
 
-    // Parse other attributes
+    // Parse fields
     let from = parse_header_field(lines.next(), "From")?;
     let body = parse_header_field(lines.next(), "Body")?;
     let to = parse_header_field(lines.next(), "To")?;
 
-    Ok(FctpMessage {
+    let message = FctpMessage {
         code,
         from,
         body,
         to,
-    })
+    };
+
+    message.validate()?;
+    Ok(message)
 }
 
 fn parse_header_field(line: Option<&str>, field_name: &str) -> Result<String> {
@@ -229,127 +272,158 @@ pub fn ui_emit_fctp_message(app: &AppHandle, msg: String) {
         eprintln!("Failed to emit message: {:?}", e);
     }
 }
+
 pub async fn process_fctp_stream(
     app: tauri::AppHandle,
     message: &[u8],
     last_pong: &Arc<Mutex<Instant>>,
 ) {
-    if let Ok(fctp_message) = decapsulate_fctp_message(message, &get_session_key()) {
-        println!(
-            "{:?},{},{},{}",
-            fctp_message.code, fctp_message.from, fctp_message.body, fctp_message.to
+    // Validate message size
+    if message.len() > MAX_MESSAGE_SIZE {
+        ui_emit_fctp_message(
+            &app,
+            format!("[!Error!] Message too large: {} bytes", message.len()),
         );
-        match fctp_message.code {
-            FctpCode::Message => {
-                //default c<-c message
-                match base64_decode(&fctp_message.body.trim()) {
-                    Ok(encrypted_message_bytes) => {
-                        match crypt::asymmetric::decrypt(
-                            &protocol_utils::fctp_secure::get_e2ee_sec(),
-                            &encrypted_message_bytes,
-                        ) {
-                            Ok(msg) => {
-                                let formatted_msg = format!(
-                                    "<{}> {}",
-                                    fctp_message.from,
-                                    String::from_utf8_lossy(&msg).trim()
-                                );
-                                ui_emit_fctp_message(&app, formatted_msg);
-                            }
-                            Err(err) => {
-                                eprintln!("Couldn't decrypt: {}", err)
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("Couldn't decode: {}", err)
-                    }
-                }
-                LAST_ACK.store(true, Ordering::Relaxed);
-
-                // if let Err(e) = app
-                //     .notification()
-                //     .builder()
-                //     .title("FoggyChat")
-                //     .body(format!("{}: {}", msg.from, msg.body))
-                //     .show()
-                // {
-                //     eprintln!("Failed to show notification: {:?}", e);
-                // }
-            }
-            FctpCode::Command => {
-                //c<-s message
-                ui_emit_fctp_message(&app, format!("|SERVER| {}", fctp_message.body));
-                LAST_ACK.store(true, Ordering::Relaxed);
-            }
-
-            FctpCode::MethodNotAllowed => {
-                //Error by client
-                ui_emit_fctp_message(&app, format!("[!Client error!] {}", fctp_message.body));
-                LAST_ACK.store(true, Ordering::Relaxed);
-                REQUEST_ERROR.store(true, Ordering::Relaxed);
-            }
-            FctpCode::InternalServerError => {
-                //Error by server
-                ui_emit_fctp_message(&app, format!("[!Server error!] {}", fctp_message.body));
-                LAST_ACK.store(true, Ordering::Relaxed);
-                REQUEST_ERROR.store(true, Ordering::Relaxed);
-            }
-            FctpCode::Hello => {
-                //9xx - SYSTEM MESSAGE POOL
-                if fctp_message.body == "id" {
-                    let id_clone = fctp_message.to.clone();
-                    let server_id_clone = fctp_message.from.clone();
-                    protocol_utils::fctp_me::set_id(&id_clone);
-                    set_server_id(&server_id_clone);
-                }
-            }
-            FctpCode::KeyRequest => {
-                let recipient_e2ee_key_bytes =
-                    base64_decode(&fctp_message.body.trim()).expect("Base64 decode failed");
-                let recipient_e2ee_key_array: [u8; 32] = recipient_e2ee_key_bytes
-                    .as_slice()
-                    .try_into()
-                    .expect("Invalid key length");
-                let recipient_e2ee_key = PublicKey::from(recipient_e2ee_key_array);
-                fctp_secure::E2EE_KEY_TABLE
-                    .write()
-                    .expect("Lock poisoned")
-                    .insert(get_current_recipient(), recipient_e2ee_key);
-
-                LAST_ACK.store(true, Ordering::Relaxed);
-            }
-            FctpCode::Pong => {
-                // Pong handling
-                let mut pong_time = last_pong.lock().await;
-                *pong_time = Instant::now();
-            }
-            _ => {
-                //Code not matching
-                ui_emit_fctp_message(
-                    &app,
-                    format!(
-                        "[!Unsupported code!]: {:?}\nUpdate your client or contact server admin!",
-                        fctp_message.code
-                    ),
-                );
-            }
-        }
-    } else {
-        let msg_preview = String::from_utf8_lossy(message);
-        let preview = if msg_preview.len() > 100 {
-            format!("{}...", &msg_preview[..100])
-        } else {
-            msg_preview.to_string()
-        };
-        ui_emit_fctp_message(&app, format!("[!Malformed message!]: {}", preview));
+        return;
     }
+
+    let fctp_message = match decapsulate_fctp_message(message, &get_session_key()) {
+        Ok(msg) => msg,
+        Err(e) => {
+            let msg_preview = String::from_utf8_lossy(message);
+            let preview = if msg_preview.len() > 100 {
+                format!("{}...", &msg_preview[..100])
+            } else {
+                msg_preview.to_string()
+            };
+            ui_emit_fctp_message(&app, format!("[!Malformed message!]: {} - {}", preview, e));
+            return;
+        }
+    };
+
+    println!(
+        "{:?},{},{},{}",
+        fctp_message.code, fctp_message.from, fctp_message.body, fctp_message.to
+    );
+
+    match fctp_message.code {
+        FctpCode::Message => handle_message(&app, fctp_message).await,
+        FctpCode::Command => handle_command(&app, fctp_message).await,
+        FctpCode::MethodNotAllowed => handle_error(&app, fctp_message, "Client error").await,
+        FctpCode::InternalServerError => handle_error(&app, fctp_message, "Server error").await,
+        FctpCode::BadRequest => handle_error(&app, fctp_message, "Bad Request").await,
+        FctpCode::ServiceUnavailable => {
+            handle_error(&app, fctp_message, "Service Unavailable").await
+        }
+        FctpCode::Hello => handle_hello(&app, fctp_message).await,
+        FctpCode::KeyRequest => handle_key_request(&app, fctp_message).await,
+        FctpCode::Pong => handle_pong(last_pong).await,
+        _ => {
+            ui_emit_fctp_message(
+                &app,
+                format!(
+                    "[!Unsupported code!]: {:?}\nUpdate your client or contact server admin!",
+                    fctp_message.code
+                ),
+            );
+        }
+    }
+}
+
+async fn handle_message(app: &AppHandle, msg: FctpMessage) {
+    let encrypted_bytes = match base64_decode(&msg.body.trim()) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("Base64 decode error: {}", err);
+            return;
+        }
+    };
+
+    let decrypted = match crypt::asymmetric::decrypt(&get_e2ee_sec(), &encrypted_bytes) {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("Decryption error: {}", err);
+            return;
+        }
+    };
+
+    let formatted_msg = format!(
+        "<{}> {}",
+        msg.from,
+        String::from_utf8_lossy(&decrypted).trim()
+    );
+    ui_emit_fctp_message(app, formatted_msg);
+    LAST_ACK.store(true, Ordering::Relaxed);
+}
+
+async fn handle_command(app: &AppHandle, msg: FctpMessage) {
+    ui_emit_fctp_message(app, format!("|SERVER| {}", msg.body));
+    LAST_ACK.store(true, Ordering::Relaxed);
+}
+
+async fn handle_error(app: &AppHandle, msg: FctpMessage, error_type: &str) {
+    ui_emit_fctp_message(app, format!("[!{}!] {}", error_type, msg.body));
+    LAST_ACK.store(true, Ordering::Relaxed);
+    REQUEST_ERROR.store(true, Ordering::Relaxed);
+}
+
+async fn handle_hello(_app: &AppHandle, msg: FctpMessage) {
+    if msg.body == "id" {
+        protocol_utils::fctp_me::set_id(&msg.to);
+        if let Err(e) = set_server_id(&msg.from) {
+            eprintln!("Failed to set server ID: {}", e);
+        }
+    }
+}
+
+async fn handle_key_request(_app: &AppHandle, msg: FctpMessage) {
+    let key_bytes = match base64_decode(&msg.body.trim()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Base64 decode failed: {}", e);
+            return;
+        }
+    };
+
+    if key_bytes.len() != 32 {
+        eprintln!("Invalid key length: expected 32, got {}", key_bytes.len());
+        return;
+    }
+
+    let key_array: [u8; 32] = match key_bytes.as_slice().try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            eprintln!("Failed to convert key bytes to array");
+            return;
+        }
+    };
+
+    let recipient_key = PublicKey::from(key_array);
+
+    let recipient = match get_current_recipient() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to get current recipient: {}", e);
+            return;
+        }
+    };
+
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        table.insert(recipient, recipient_key);
+        LAST_ACK.store(true, Ordering::Relaxed);
+    } else {
+        eprintln!("Failed to acquire E2EE key table lock");
+    }
+}
+
+async fn handle_pong(last_pong: &Arc<Mutex<Instant>>) {
+    let mut pong_time = last_pong.lock().await;
+    *pong_time = Instant::now();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypt::symmetric;
 
     #[test]
     fn test_fctp_encapsulation_and_decapsulation() {
@@ -358,6 +432,7 @@ mod tests {
 
         let encrypted = encapsulate_to_fctp(&msg, &key).expect("Should encrypt");
         assert!(!encrypted.is_empty());
+        assert!(encrypted.len() < MAX_MESSAGE_SIZE);
 
         let decrypted = decapsulate_fctp_message(&encrypted, &key).expect("Should decrypt");
         assert_eq!(decrypted, msg);
@@ -378,22 +453,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_fctp_message_direct() {
-        let valid_message = "FoggyChat Transfer Protocol 0.1\r\n200\r\nFrom: test\r\nBody: hello world\r\nTo: user\r\n\r\n";
-        let parsed = parse_fctp_message(valid_message).expect("Should parse valid message");
+    fn test_message_validation() {
+        let invalid_msg = FctpMessage::new(FctpCode::Message, "", "body", "to");
+        assert!(invalid_msg.validate().is_err());
 
-        assert_eq!(parsed.code, FctpCode::Message);
-        assert_eq!(parsed.from, "test");
-        assert_eq!(parsed.body, "hello world");
-        assert_eq!(parsed.to, "user");
+        let valid_msg = FctpMessage::new(FctpCode::Message, "from", "body", "to");
+        assert!(valid_msg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_message_size_limit() {
+        let large_body = "x".repeat(MAX_MESSAGE_SIZE + 1);
+        let msg = FctpMessage::new(FctpCode::Message, "alice", large_body, "bob");
+        let key = crate::crypt::symmetric::keygen();
+
+        let result = encapsulate_to_fctp(&msg, &key);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_server_id_management() {
-        set_server_id("test_server_123");
-        assert_eq!(get_server_id(), "test_server_123");
+        set_server_id("test_server_123").expect("Should set ID");
+        assert_eq!(get_server_id().unwrap(), "test_server_123");
 
-        set_server_id("another_server");
-        assert_eq!(get_server_id(), "another_server");
+        set_server_id("another_server").expect("Should update ID");
+        assert_eq!(get_server_id().unwrap(), "another_server");
     }
 }
