@@ -120,10 +120,11 @@
 <main class="flex h-full relative">
     <!-- Mobile Overlay -->
     {#if isMobile && sidebarOpen}
-        <div
+        <button
             class="fixed inset-0 bg-black/50 z-40 md:hidden"
             on:click={() => (sidebarOpen = false)}
-        ></div>
+            aria-label="Close sidebar"
+        ></button>
     {/if}
 
     <!-- Sidebar -->
