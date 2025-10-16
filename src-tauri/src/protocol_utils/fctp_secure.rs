@@ -1,5 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
+use crate::crypt::utils::base64_decode;
+use crate::protocol_utils::fctp::{get_current_recipient, FctpMessage, LAST_ACK};
 use crate::protocol_utils::fctp_me;
 use crate::protocol_utils::{self, fctp};
 use crate::send_packet;
@@ -244,4 +246,44 @@ pub async fn handle_non_existent_e2ee_key(recipient: &str) -> Result<(), String>
         }
         sleep(Duration::from_millis(100)).await;
     })
+}
+
+pub async fn handle_e2ee_key_request(_app: &AppHandle, msg: FctpMessage) {
+    let key_bytes = match base64_decode(&msg.body.trim()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Base64 decode failed: {}", e);
+            return;
+        }
+    };
+
+    if key_bytes.len() != 32 {
+        eprintln!("Invalid key length: expected 32, got {}", key_bytes.len());
+        return;
+    }
+
+    let key_array: [u8; 32] = match key_bytes.as_slice().try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            eprintln!("Failed to convert key bytes to array");
+            return;
+        }
+    };
+
+    let recipient_key = PublicKey::from(key_array);
+
+    let recipient = match get_current_recipient() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to get current recipient: {}", e);
+            return;
+        }
+    };
+
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        table.insert(recipient, recipient_key);
+        LAST_ACK.store(true, Ordering::Relaxed);
+    } else {
+        eprintln!("Failed to acquire E2EE key table lock");
+    }
 }
