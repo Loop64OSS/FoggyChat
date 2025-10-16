@@ -316,7 +316,9 @@ pub async fn process_fctp_stream(
             handle_error(&app, fctp_message, "Service Unavailable").await
         }
         FctpCode::Hello => handle_hello(&app, fctp_message).await,
-        FctpCode::KeyRequest => handle_key_request(&app, fctp_message).await,
+        FctpCode::KeyRequest => {
+            protocol_utils::fctp_secure::handle_e2ee_key_request(&app, fctp_message).await
+        }
         FctpCode::Pong => handle_pong(last_pong).await,
         _ => {
             ui_emit_fctp_message(
@@ -373,46 +375,6 @@ async fn handle_hello(_app: &AppHandle, msg: FctpMessage) {
         if let Err(e) = set_server_id(&msg.from) {
             eprintln!("Failed to set server ID: {}", e);
         }
-    }
-}
-
-async fn handle_key_request(_app: &AppHandle, msg: FctpMessage) {
-    let key_bytes = match base64_decode(&msg.body.trim()) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Base64 decode failed: {}", e);
-            return;
-        }
-    };
-
-    if key_bytes.len() != 32 {
-        eprintln!("Invalid key length: expected 32, got {}", key_bytes.len());
-        return;
-    }
-
-    let key_array: [u8; 32] = match key_bytes.as_slice().try_into() {
-        Ok(arr) => arr,
-        Err(_) => {
-            eprintln!("Failed to convert key bytes to array");
-            return;
-        }
-    };
-
-    let recipient_key = PublicKey::from(key_array);
-
-    let recipient = match get_current_recipient() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to get current recipient: {}", e);
-            return;
-        }
-    };
-
-    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
-        table.insert(recipient, recipient_key);
-        LAST_ACK.store(true, Ordering::Relaxed);
-    } else {
-        eprintln!("Failed to acquire E2EE key table lock");
     }
 }
 
