@@ -85,6 +85,44 @@ pub fn has_pk_in_e2ee_key_table(username: &str) -> bool {
         .contains_key(username)
 }
 
+// Remove a public key entry by username. Returns true if an entry was removed.
+pub fn remove_pk_from_e2ee_key_table(username: &str) -> bool {
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        table.remove(username).is_some()
+    } else {
+        eprintln!("Failed to acquire write lock to remove E2EE key");
+        false
+    }
+}
+
+// Remove the public key for username only if it matches the provided key.
+// Returns true if removed.
+#[allow(unused)]
+pub fn remove_pk_if_matches(username: &str, key: PublicKey) -> bool {
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        if let Some(existing) = table.get(username) {
+            if *existing == key {
+                table.remove(username);
+                return true;
+            }
+        }
+        false
+    } else {
+        eprintln!("Failed to acquire write lock to conditionally remove E2EE key");
+        false
+    }
+}
+
+// Clear the entire E2EE key table.
+#[allow(unused)]
+pub fn clear_e2ee_key_table() {
+    if let Ok(mut table) = E2EE_KEY_TABLE.write() {
+        table.clear();
+    } else {
+        eprintln!("Failed to acquire write lock to clear E2EE key table");
+    }
+}
+
 pub async fn handle_handshake_message(
     data: &[u8],
     app: &AppHandle,

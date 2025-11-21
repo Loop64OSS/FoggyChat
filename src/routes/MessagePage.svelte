@@ -28,6 +28,7 @@
     var recipient = "";
     let sidebarOpen = false;
     let isMobile = false;
+    let allMessages: string[] = [];
 
     let messages: string[] = [];
     let messagesContainer: HTMLDivElement;
@@ -81,8 +82,21 @@
 
     function selectRecipient(userId: string) {
         recipient = userId;
+        invoke("ui_command_select_recipient", { recipient: recipient });
         if (isMobile) {
             sidebarOpen = false;
+        }
+    }
+    function removeRecipient(id: string): void {
+        // Remove the user from the addedUsers list
+        invoke("ui_command_remove_recipient", { recipient: id });
+        addedUsers = addedUsers.filter((u) => u.id !== id);
+
+        // If the removed user was the currently selected recipient, clear selection
+        if (recipient === id) {
+            recipient = "";
+            // notify backend about deselection
+            selectRecipient(recipient);
         }
     }
     const scrollToBottom = async (obj: HTMLDivElement) => {
@@ -195,11 +209,13 @@
             <div class="flex-1 overflow-y-auto p-2">
                 <div class="space-y-1">
                     {#each addedUsers as user}
-                        <button
-                            class={`w-full p-3 rounded-xl text-left hover:preset-filled-surface-100-900 transition-colors ${recipient === user.id ? "preset-filled-primary-100-900 ring-2 ring-primary-500/30" : ""}`}
-                            on:click={() => selectRecipient(user.id)}
+                        <div
+                            class={`w-full p-3 rounded-xl text-left hover:preset-filled-surface-100-900 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-100-900 ring-2 ring-primary-500/30" : ""}`}
                         >
-                            <div class="flex items-center gap-3">
+                            <button
+                                on:click={() => selectRecipient(user.id)}
+                                class="flex items-center gap-3 flex-1 text-left"
+                            >
                                 <div class="relative">
                                     <div
                                         class="w-10 h-10 preset-filled-primary-400-500 rounded-full flex items-center justify-center text-white font-medium preset-outlined-surface-500"
@@ -212,8 +228,17 @@
                                         {user.name}
                                     </p>
                                 </div>
+                            </button>
+
+                            <div class="ml-3 flex items-center">
+                                <button
+                                    class="p-1 rounded hover:bg-surface-200-800"
+                                    on:click={() => removeRecipient(user.id)}
+                                >
+                                    <X />
+                                </button>
                             </div>
-                        </button>
+                        </div>
                     {/each}
                 </div>
             </div>
