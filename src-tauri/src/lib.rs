@@ -25,6 +25,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::protocol_utils::fctp::LAST_ACK;
 use crate::protocol_utils::fctp_secure::handle_non_existent_e2ee_key;
+use crate::protocol_utils::fctp_secure::remove_pk_from_e2ee_key_table;
 
 // Constants
 const BUFFER_SIZE: usize = 8192;
@@ -58,7 +59,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ui_command_send_fctp_message,
             ui_command_request_connection,
-            ui_command_status
+            ui_command_status,
+            ui_command_select_recipient,
+            ui_command_remove_recipient
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -114,11 +117,6 @@ async fn handle_regular_message(
 
     fctp::set_current_recipient(recipient.trim())
         .map_err(|e| format!("Failed to set recipient: {}", e))?;
-
-    // Request public key if not cached
-    if !protocol_utils::fctp_secure::has_pk_in_e2ee_key_table(recipient.trim()) {
-        let _ = handle_non_existent_e2ee_key(recipient.trim()).await;
-    }
 
     let pk = protocol_utils::fctp_secure::get_pk_from_e2ee_key_table(recipient.trim())
         .ok_or("Failed to retrieve recipient's public key")?;
@@ -185,6 +183,26 @@ async fn ui_command_status(input: String) {
     }
 }
 
+#[tauri::command]
+async fn ui_command_select_recipient(recipient: String) {
+    // Ensure the backend knows the currently selected recipient so
+    // any incoming E2EE key response is stored under the correct name.
+    if let Err(e) = fctp::set_current_recipient(recipient.trim()) {
+        eprintln!("Failed to set current recipient: {}", e);
+    }
+
+    // Request public key if not cached
+    if !protocol_utils::fctp_secure::has_pk_in_e2ee_key_table(recipient.trim())
+        && recipient != "server"
+        && !recipient.is_empty()
+    {
+        let _ = handle_non_existent_e2ee_key(recipient.trim()).await;
+    }
+}
+#[tauri::command]
+async fn ui_command_remove_recipient(recipient: String) {
+    remove_pk_from_e2ee_key_table(recipient.trim());
+}
 pub fn ui_emit_status(app: AppHandle, msg: String) {
     if let Err(e) = app.emit("status", msg) {
         eprintln!("Failed to emit status: {:?}", e);
