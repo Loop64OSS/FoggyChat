@@ -1,23 +1,19 @@
 use aes_gcm::{Aes256Gcm, Key};
 use lazy_static::lazy_static;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, RwLock,
 };
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::{sync::Mutex, time::Instant};
-use x25519_dalek::PublicKey;
 
 use crate::{
     crypt::{self, symmetric, utils::base64_decode},
     protocol_utils::{
         self,
         fctp_me::get_id,
-        fctp_secure::{get_e2ee_sec, get_session_key, E2EE_KEY_TABLE},
+        fctp_secure::{get_e2ee_sec, get_session_key},
     },
 };
 
