@@ -3,7 +3,6 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use base64::prelude::*;
 
 const DIVIDER: &str = "::";
 pub fn keygen() -> Key<Aes256Gcm> {

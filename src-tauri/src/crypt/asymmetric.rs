@@ -96,10 +96,10 @@ pub fn decrypt(
 }
 
 #[cfg(test)]
-use base64::{engine::general_purpose, Engine as _};
 mod tests {
     #[allow(unused_imports)] // zamknięcie walonego rust analyzera
     use super::*;
+    use base64::{engine::general_purpose, Engine as _};
 
     #[test]
     fn keypair_and_crypto_roundtrip() {
