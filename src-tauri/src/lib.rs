@@ -18,32 +18,28 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Instant};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-// Buffer size
+/* Buffer size */
 const BUFFER_SIZE: usize = 8192;
 
-// Timeout for establishing the TCP connection to the server.
+/* Timeout for establishing the TCP connection to the server. */
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
-// If we don't receive a "pong" for this many seconds, we consider the
-// connection not responding (used for diagnostics). Separate from the
-// lower-level TCP disconnect detection.
+/* If we don't receive a "pong" for this many seconds, we consider the
+connection not responding (used for diagnostics). Separate from the
+lower-level TCP disconnect detection. */
 const PONG_TIMEOUT_SECS: u64 = 240;
 
-// Interval between periodic ping messages sent to the server to keep the
-// session alive and detect stale connections.
-const PING_INTERVAL_SECS: u64 = 120;
+/* Interval between periodic ping messages sent to the server to keep the
+session alive and detect stale connections. */
+const PING_INTERVAL_SECS: u64 = 120; /* 2 minutes */
 
-// Global state
-// ---------------------------------------------------------------------------
-// Global state
-// ---------------------------------------------------------------------------
-// TASKS: helps to terminate tasks later and manage them
+/* TASKS: helps to terminate tasks later and manage them */
 static TASKS: Lazy<Arc<Mutex<Vec<JoinHandle<()>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 
-// TX: channel sender used by ui commands (or other functions) to transport messages that the
-// writer task will send on the TCP socket. Stored globally so UI commands can
-// access it asynchronously.
+/* TX: channel sender used by ui commands (or other functions) to transport messages that the
+writer task will send on the TCP socket. Stored globally so UI commands can
+access it asynchronously. */
 static TX: Lazy<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 
@@ -58,7 +54,7 @@ pub fn run() {
     ))]
     std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
 
-    // Build and run the Tauri application.
+    /* Build and run the Tauri application. */
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -82,7 +78,7 @@ async fn ui_command_send_fctp_message(
     recipient: &str,
     app: AppHandle,
 ) -> Result<(), String> {
-    // Validate inputs
+    /* Validate inputs */
     if message.is_empty() {
         return Err("Message cannot be empty".into());
     }
@@ -90,10 +86,10 @@ async fn ui_command_send_fctp_message(
         return Err("Recipient cannot be empty".into());
     }
 
-    // Distinguish between slash-commands and regular messages.
-    // Commands start with '/', e.g. '/help'. They are routed to a
-    // different handler which sends FCTP Command packets instead of regular
-    // E2EE messages.
+    /* Distinguish between slash-commands and regular messages.
+    Commands start with '/', e.g. '/help'. They are routed to a
+    different handler which sends FCTP Command packets instead of regular
+    E2EE messages. */
     if message.starts_with("/") {
         handle_command_message(message, &app).await
     } else {
@@ -120,9 +116,9 @@ async fn handle_command_message(message: &str, _app: &AppHandle) -> Result<(), S
     send_packet(packet).await
 }
 
-// handle_command_message: prepares an FCTP command packet and sends it over
-// the current session. Commands are plain text messages meant for server-side
-// control (not end-to-end encrypted chat messages).
+/* handle_command_message: prepares an FCTP command packet and sends it over
+the current session. Commands are plain text messages meant for server-side
+control (not end-to-end encrypted chat messages). */
 
 async fn handle_regular_message(
     message: &str,
@@ -135,15 +131,15 @@ async fn handle_regular_message(
     fctp::set_current_recipient(recipient.trim())
         .map_err(|e| format!("Failed to set recipient: {}", e))?;
 
-    // Lookup recipient's public key from the in-memory E2EE table. If it's not
-    // cached, the calling UI code should have requested it before sending.
+    /* Lookup recipient's public key from the in-memory E2EE table. If it's not */
+    /* cached, the calling UI code should have requested it before sending. */
     let pk = protocol_utils::fctp_secure::get_pk_from_e2ee_key_table(recipient.trim())
         .ok_or("Failed to retrieve recipient's public key")?;
 
-    // Encrypt the plaintext for the recipient using the recipient's public key
-    // (asymmetric encryption). The result is base64 encoded and packaged into
-    // an FCTP Message packet which is then symmetrically encrypted with the
-    // session key by `encapsulate_to_fctp`.
+    /* Encrypt the plaintext for the recipient using the recipient's public key
+    (asymmetric encryption). The result is base64 encoded and packaged into
+    an FCTP Message packet which is then symmetrically encrypted with the
+    session key by `encapsulate_to_fctp`. */
     let encrypted = crypt::asymmetric::encrypt(&pk, message.trim().as_bytes())
         .map_err(|e| format!("Encryption error: {:?}", e))?;
 
@@ -161,11 +157,11 @@ async fn handle_regular_message(
     )
     .map_err(|e| format!("FctpError: {:?}", e))?;
 
-    // Send the prepared packet via the global channel. On success, mirror the
-    // message in the UI (so the sender sees their outgoing message immediately).
+    /* Send the prepared packet via the global channel. On success, mirror the
+    message in the UI (so the sender sees their outgoing message immediately). */
     send_packet(packet).await?;
 
-    // Only display the message locally if the request didn't set an error flag.
+    /* Only display the message locally if the request didn't set an error flag. */
     if !fctp::REQUEST_ERROR.load(Ordering::Relaxed) {
         let formatted_msg = format!("[You] {}", message.trim());
         fctp::ui_emit_fctp_message(app, formatted_msg);
@@ -193,9 +189,9 @@ fn ui_command_request_connection(address: &str, app: AppHandle) {
     });
 }
 
-// ui_command_request_connection: invoked by the frontend to start a TCP
-// connection to the server. It spawns an async task so the Tauri command
-// returns immediately while the connection attempt runs in the background.
+/* ui_command_request_connection: invoked by the frontend to start a TCP
+connection to the server. It spawns an async task so the Tauri command
+ returns immediately while the connection attempt runs in the background. */
 
 #[tauri::command]
 async fn ui_command_status(input: String) {
@@ -213,13 +209,13 @@ async fn ui_command_status(input: String) {
 
 #[tauri::command]
 async fn ui_command_select_recipient(recipient: String) {
-    // Ensure the backend knows the currently selected recipient so
-    // any incoming E2EE key response is stored under the correct name.
+    /* Ensure the backend knows the currently selected recipient so
+    any incoming E2EE key response is stored under the correct name. */
     if let Err(e) = fctp::set_current_recipient(recipient.trim()) {
         eprintln!("Failed to set current recipient: {}", e);
     }
 
-    // Request public key if not cached
+    /* Request public key if not cached */
     if !protocol_utils::fctp_secure::has_pk_in_e2ee_key_table(recipient.trim())
         && recipient != "server"
         && !recipient.is_empty()
@@ -247,7 +243,7 @@ async fn init_connection(app: AppHandle, server_address: String) -> Result<(), S
     Ok(())
 }
 
-// init_connection: establish a TCP connection to the server with a timeout
+/* init_connection: establish a TCP connection to the server with a timeout */
 
 async fn abort_all_tasks() {
     let mut tasks = TASKS.lock().await;
@@ -256,9 +252,9 @@ async fn abort_all_tasks() {
     }
 }
 
-// abort_all_tasks: stop all background tasks associated with the connection.
-// We use task.abort() because tasks may be blocked on IO; aborting ensures
-// quick cleanup.
+/* abort_all_tasks: stop all background tasks associated with the connection.
+We use task.abort() because tasks may be blocked on IO; aborting ensures
+quick cleanup. */
 
 async fn cleanup_connection(app: AppHandle) {
     set_session_key(Key::<Aes256Gcm>::default());
@@ -273,9 +269,9 @@ async fn cleanup_connection(app: AppHandle) {
     ui_emit_status(app, "USER::DISCONNECT".to_string());
 }
 
-// cleanup_connection: resets session/exchange keys, clears the E2EE key cache,
-// removes the global sender and aborts tasks, then notifies the frontend about
-// the disconnection.
+/* cleanup_connection: resets session/exchange keys, clears the E2EE key cache,
+removes the global sender and aborts tasks, then notifies the frontend about
+the disconnection. */
 
 async fn handle_server_message(
     data: &[u8],
@@ -288,18 +284,18 @@ async fn handle_server_message(
         return Ok(());
     }
 
-    // During handshake (no session key), handle raw data
-    // After handshake (session key set), handle FCTP messages
+    /* During handshake (no session key), handle raw data
+    After handshake (session key set), handle FCTP messages */
     if get_session_key() == Key::<Aes256Gcm>::default() {
         protocol_utils::fctp_secure::handle_handshake_message(data, app, tx, fp_verified).await
     } else {
-        // This is an encrypted FCTP message
+        /* This is an encrypted FCTP message */
         fctp::process_fctp_stream(app.clone(), data, last_pong).await;
         Ok(())
     }
 }
-// handle_server_message: forwards the message to handshake handler or
-// fctp stream processor depending if the key is exchanged.
+/* handle_server_message: forwards the message to handshake handler or
+fctp stream processor depending if the key is exchanged. */
 
 async fn stream_handler(app: AppHandle, stream: TcpStream) {
     let (mut reader, writer) = stream.into_split();
@@ -310,11 +306,11 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
 
     TX.lock().await.replace(tx.clone());
 
-    // -----------------------------------------------------------------------
-    // Reader task
-    // - reads raw bytes from the TCP socket
-    // - during handshake: collects and passes textual handshake messages
-    // - after handshake: accumulates framed encrypted messages and passes them to the FCTP processor
+    /*
+    Reader task
+    - reads raw bytes from the TCP socket
+    - during handshake: collects and passes textual handshake messages
+    - after handshake: accumulates framed encrypted messages and passes them to the FCTP processor */
     {
         let tx_clone = tx.clone();
         let app_clone = app.clone();
@@ -333,10 +329,10 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                     }
                     Ok(n) => {
                         if get_session_key() == Key::<Aes256Gcm>::default() {
-                            // Handshake (no aes key): the protocol exchanges short messages
-                            // lines terminated by \r\n\r\n (like http). Convert the bytes to a
-                            // string and pass the first non-empty line to the
-                            // handshake handler.
+                            /* Handshake (no aes key): the protocol exchanges short messages
+                            lines terminated by \r\n\r\n (like http). Convert the bytes to a
+                            string and pass the first non-empty line to the
+                            handshake handler. */
                             let data = &buffer[..n];
                             let text_data = String::from_utf8_lossy(data);
 
@@ -360,10 +356,10 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                 }
                             }
                         } else {
-                            // All of the messages are encrypted from here
+                            /* All of the messages are encrypted from here */
                             message_buffer.extend_from_slice(&buffer[..n]);
 
-                            // Prevent an unbounded buffer growth
+                            /* Prevent an unbounded buffer growth */
                             if message_buffer.len() > BUFFER_SIZE * 4 {
                                 eprintln!("Message buffer overflow, clearing");
                                 message_buffer.clear();
@@ -377,8 +373,8 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                         message_buffer[..4].try_into().unwrap();
                                     let message_length = u32::from_be_bytes(length_bytes) as usize;
 
-                                    // Sanity check: reject ridiculously large
-                                    // lengths to avoid excessive allocation.
+                                    /* Sanity check: reject ridiculously large
+                                    lengths to avoid excessive allocation. */
                                     if message_length > BUFFER_SIZE * 4 {
                                         eprintln!("Invalid message length: {}", message_length);
                                         message_buffer.clear();
@@ -390,9 +386,9 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                 }
 
                                 if let Some(msg_len) = expecting_length {
-                                    // The framed message layout is: 4 bytes length
-                                    // | message bytes | 12 bytes nonce/tag
-                                    let total_length = 4 + msg_len + 12; // length + message + nonce
+                                    /* The framed message layout is: 4 bytes length
+                                    | message bytes | 12 bytes nonce/tag */
+                                    let total_length = 4 + msg_len + 12; /* length + message + nonce */
 
                                     if message_buffer.len() >= total_length {
                                         let message_data = message_buffer
@@ -412,7 +408,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                                             eprintln!("Error handling encrypted message: {}", e);
                                         }
                                     } else {
-                                        // Not enough data yet for the full message.
+                                        /* Not enough data yet for the full message. */
                                         break;
                                     }
                                 }
@@ -426,7 +422,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                 }
             }
 
-            // Trigger disconnect
+            /* Trigger disconnect */
             if let Some(tx) = &*TX.lock().await {
                 let _ = tx.send("USER::DISCONNECT".as_bytes().to_vec()).await;
             }
@@ -434,7 +430,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
-    // Writer task
+    /* Writer task */
     {
         let app_clone = app.clone();
         let fp_verified_clone = fp_verified.clone();
@@ -442,7 +438,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         let handle = tokio::spawn(async move {
             let mut writer = writer;
             while let Some(msg) = rx.recv().await {
-                // Handle control messages
+                /* Handle control messages */
                 if msg == b"USER::FP_MATCH" {
                     fp_verified_clone.store(true, Ordering::Relaxed);
                     continue;
@@ -460,13 +456,13 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
-    // Writer task
-    // receives Vec<u8> messages from the UI via the mpsc::Receiver
-    // (the communication happens from UI -> backend ui #[tauri::command] handler with mpsc tx -> mpsc rx),
-    // recognizes a control messages (fingerprint match, disconnect),
-    // The default messages are passed to server via TCP
+    /* Writer task
+    receives Vec<u8> messages from the UI via the mpsc::Receiver
+    (the communication happens from UI -> backend ui #[tauri::command] handler with mpsc tx -> mpsc rx),
+    recognizes a control messages (fingerprint match, disconnect),
+    The default messages are passed to server via TCP */
 
-    // Pong monitor task
+    /* Pong monitor task */
     {
         let last_pong_clone = last_pong.clone();
         let handle = tokio::spawn(async move {
@@ -487,10 +483,10 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
-    // Pong monitor: periodically checks the time since the last pong was seen.
-    // If the connection is still in the handshake phase, we reset the timer so we don't trigger false positives.
+    /* Pong monitor: periodically checks the time since the last pong was seen.
+    If the connection is still in the handshake phase, we reset the timer so we don't trigger false positives. */
 
-    // Ping task
+    /* Ping task */
     {
         let tx_clone = tx.clone();
         let handle = tokio::spawn(async move {
@@ -519,7 +515,7 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
         TASKS.lock().await.push(handle);
     }
 
-    // Keep connection alive
+    /* Keep connection alive */
     loop {
         sleep(Duration::from_secs(60)).await;
     }
