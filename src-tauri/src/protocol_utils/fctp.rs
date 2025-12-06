@@ -17,12 +17,13 @@ use crate::{
     },
 };
 
-/*  The version of the FCTP protocol being used. */
+/* Protocol version */
 const PROTOCOL_VERSION: &str = "FoggyChat Transfer Protocol 0.1";
-/*  The maximum allowed size for a single FCTP message in bytes (1MB). */
-const MAX_MESSAGE_SIZE: usize = 1_048_576; /*  1MB limit */
 
-/*  Defines the possible errors that can occur during FCTP message processing. */
+/* Max allowed message size (1 MB) */
+const MAX_MESSAGE_SIZE: usize = 1_048_576;
+
+/* FCTP error types */
 #[derive(Error, Debug)]
 pub enum FctpError {
     #[error("Encryption failed: {0}")]
@@ -37,10 +38,10 @@ pub enum FctpError {
     MessageTooLarge(usize, usize),
 }
 
-/*  A type alias for `Result` with the FCTP-specific error type. */
+/* Local Result alias */
 type Result<T> = std::result::Result<T, FctpError>;
 
-/*  Represents the various codes used in the FCTP protocol to signify message types. */
+/* FCTP message codes */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FctpCode {
     /*  System message for checking connectivity. */
@@ -105,13 +106,7 @@ pub struct FctpMessage {
 }
 
 impl FctpMessage {
-    /*  Creates a new `FctpMessage`. */
-
-    /*  # Arguments */
-    /*  * `code` - The `FctpCode` for the message. */
-    /*  * `from` - The sender's ID. */
-    /*  * `body` - The message content. */
-    /*  * `to` - The recipient's ID. */
+    /* Create a new FctpMessage */
     pub fn new(
         code: FctpCode,
         from: impl Into<String>,
@@ -126,23 +121,22 @@ impl FctpMessage {
         }
     }
     #[allow(dead_code)]
-    /*  Creates a new `Ping` message. */
+    /* Create a Ping message */
     pub fn ping(to: impl Into<String>) -> Self {
         Self::new(FctpCode::Ping, get_id(), "ping", to)
     }
     #[allow(dead_code)]
-    /*  Creates a new `Pong` message. */
+    /* Create a Pong message */
     pub fn pong(to: impl Into<String>) -> Self {
         Self::new(FctpCode::Pong, get_id(), "pong", to)
     }
     #[allow(dead_code)]
-    /*  Creates a new error message. */
+    /* Create an error message */
     pub fn error(code: FctpCode, message: impl Into<String>, to: impl Into<String>) -> Self {
         Self::new(code, get_id(), message, to)
     }
 
-    /*  Validates message fields for regular FCTP messages. */
-    /*  Note: Some system messages (like handshake) may have empty fields */
+    /* Validate message fields for user messages */
     fn validate(&self) -> Result<()> {
         /*  Only validate user-facing messages, not system messages */
         match self.code {
@@ -163,18 +157,16 @@ impl FctpMessage {
     }
 }
 
-/*  --- Global State --- */
-/*  `lazy_static` is used to create global, thread-safe variables that are initialized at runtime. */
+/* Global state */
 lazy_static! {
-    /*  Stores the ID of the server we are connected to. */
+    /* Server ID */
     static ref SERVER_ID: RwLock<String> = RwLock::new(String::new());
-    /*  Stores the username of the current chat recipient. */
+    /* Current recipient username */
     static ref CURRENT_RECIPIENT: RwLock<String> = RwLock::new(String::new());
 }
 
-/*  A flag to indicate if the last sent message was acknowledged by the recipient. */
+/* Flags */
 pub static LAST_ACK: AtomicBool = AtomicBool::new(false);
-/*  A flag to indicate if the last request resulted in an error. */
 pub static REQUEST_ERROR: AtomicBool = AtomicBool::new(false);
 
 /*  Sets the global server ID. */
@@ -211,16 +203,8 @@ pub fn get_current_recipient() -> std::result::Result<String, String> {
         .map_err(|e| format!("Lock poisoned: {}", e))
 }
 
-/* Message Processing */
-
-/*  Encapsulates an `FctpMessage` into a byte vector for network transmission. */
-/*  This involves formatting the message, validating its size, and encrypting it. */
-
-/*  # Arguments */
-/*  * `message` - The `FctpMessage` to encapsulate. */
-/*  * `session_key` - The symmetric session key for encryption. */
+/* Encapsulate an FctpMessage: validate, format and encrypt */
 pub fn encapsulate_to_fctp(message: &FctpMessage, session_key: &Key<Aes256Gcm>) -> Result<Vec<u8>> {
-    /*  Validate message */
     message.validate()?;
 
     let formatted_message = format!(
@@ -228,7 +212,6 @@ pub fn encapsulate_to_fctp(message: &FctpMessage, session_key: &Key<Aes256Gcm>) 
         PROTOCOL_VERSION, message.code as i32, message.from, message.body, message.to
     );
 
-    /*  Check message size */
     if formatted_message.len() > MAX_MESSAGE_SIZE {
         return Err(FctpError::MessageTooLarge(
             formatted_message.len(),
@@ -240,21 +223,12 @@ pub fn encapsulate_to_fctp(message: &FctpMessage, session_key: &Key<Aes256Gcm>) 
         .map_err(|e| FctpError::EncryptionFailed(format!("{:?}", e)))
 }
 
-/*  Decapsulates a byte slice received from the network into an `FctpMessage`. */
-/*  This involves decrypting the message and parsing its contents. */
-
-/*  Arguments */
-/*  msg - The raw byte slice received from the network. */
-/*  session_key - The symmetric session key for decryption. */
+/* Decapsulate bytes into a FctpMessage: decrypt if needed then parse */
 pub fn decapsulate_fctp_message(msg: &[u8], session_key: &Key<Aes256Gcm>) -> Result<FctpMessage> {
-    /*  Validate input size */
     if msg.len() > MAX_MESSAGE_SIZE {
         return Err(FctpError::MessageTooLarge(msg.len(), MAX_MESSAGE_SIZE));
     }
 
-    /*  If the session key is the default, it means we are in the */
-    /*  initial handshake phase, and the message is not encrypted. */
-    /*  Otherwise, decrypt the message. */
     let decrypted_str = if *session_key == Key::<Aes256Gcm>::default() {
         String::from_utf8(msg.to_vec())
             .map_err(|e| FctpError::DecryptionFailed(format!("UTF-8 decode error: {}", e)))?
@@ -268,7 +242,7 @@ pub fn decapsulate_fctp_message(msg: &[u8], session_key: &Key<Aes256Gcm>) -> Res
     parse_fctp_message(&decrypted_str)
 }
 
-/*  Parses a string representation of an FCTP message into an `FctpMessage` struct. */
+/* Parse a plaintext FCTP message into a struct */
 fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
     let mut lines = message.lines();
 
@@ -294,7 +268,7 @@ fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
     let code = FctpCode::from_i32(code_int)
         .ok_or_else(|| FctpError::MalformedMessage(format!("Unknown code: {}", code_int)))?;
 
-    /*  Parse fields */
+    /* Parse header fields */
     let from = parse_header_field(lines.next(), "From")?;
     let body = parse_header_field(lines.next(), "Body")?;
     let to = parse_header_field(lines.next(), "To")?;
@@ -305,7 +279,6 @@ fn parse_fctp_message(message: &str) -> Result<FctpMessage> {
         body,
         to,
     };
-
     message.validate()?;
     Ok(message)
 }
@@ -323,22 +296,19 @@ fn parse_header_field(line: Option<&str>, field_name: &str) -> Result<String> {
         })
 }
 
-/*  Emits a message to the Tauri frontend. */
-/*  This is the primary way the backend communicates information to be displayed in the UI. */
+/* Emit a message to the Tauri frontend */
 pub fn ui_emit_fctp_message(app: &AppHandle, msg: String) {
     if let Err(e) = app.emit("fctp-message", msg) {
         eprintln!("Failed to emit message: {:?}", e);
     }
 }
 
-/*  The main entry point for processing incoming FCTP messages from the network stream. */
-/*  It decapsulates the message and dispatches it to the appropriate handler based on its code. */
+/* Process incoming FCTP bytes: decapsulate and dispatch */
 pub async fn process_fctp_stream(
     app: tauri::AppHandle,
     message: &[u8],
     last_pong: &Arc<Mutex<Instant>>,
 ) {
-    /*  Validate message size */
     if message.len() > MAX_MESSAGE_SIZE {
         ui_emit_fctp_message(
             &app,
@@ -367,27 +337,18 @@ pub async fn process_fctp_stream(
     );
 
     match fctp_message.code {
-        /*  Message: Standard user to user message, end to end encrypted, code 200. */
         FctpCode::Message => handle_message(&app, fctp_message).await,
-        /*  Command: User to server message (server command), code 201. */
         FctpCode::Command => handle_command(&app, fctp_message).await,
-        /*  MethodNotAllowed: User error, sent only to user from server, code 405. */
         FctpCode::MethodNotAllowed => handle_error(&app, fctp_message, "Client error").await,
-        /*  InternalServerError: Server error, sent to user from server when critical error occurs (ex. database connection error), code 500. */
         FctpCode::InternalServerError => handle_error(&app, fctp_message, "Server error").await,
-        /*  BadRequest: When user sends FCTP Message with unknown code, the server returns this error, code 400. */
         FctpCode::BadRequest => handle_error(&app, fctp_message, "Bad Request").await,
-        /*  ServiceUnavailable: Server error, sent to user from server, occurs when server cant access some resource (ex. critical microservice unavailability), code 505. */
         FctpCode::ServiceUnavailable => {
             handle_error(&app, fctp_message, "Service Unavailable").await
         }
-        /*  Hello: System message, is sent when server wants to assign something critical to user (ex. id). */
         FctpCode::Hello => handle_hello(&app, fctp_message).await,
-        /*  KeyRequest: System message, is sent when client wants to acquire another clients end to end encryption key. */
         FctpCode::KeyRequest => {
             protocol_utils::fctp_secure::handle_e2ee_key_request(&app, fctp_message).await
         }
-        /*  Pong: System message, pong */
         FctpCode::Pong => handle_pong(last_pong).await,
         _ => {
             ui_emit_fctp_message(
@@ -401,9 +362,7 @@ pub async fn process_fctp_stream(
     }
 }
 
-/*  Handles a standard user-to-user message (FctpCode::Message). */
-/*  It decodes the Base64 body, decrypts it using the E2EE private key, */
-/*  and emits the formatted message to the UI. */
+/* Handle user-to-user Message: Base64 decode, asymmetric decrypt, emit */
 async fn handle_message(app: &AppHandle, msg: FctpMessage) {
     let encrypted_bytes = match base64_decode(&msg.body.trim()) {
         Ok(bytes) => bytes,
@@ -430,23 +389,20 @@ async fn handle_message(app: &AppHandle, msg: FctpMessage) {
     LAST_ACK.store(true, Ordering::Relaxed);
 }
 
-/*  Handles a command from the server (FctpCode::Command).
-It displays the command body directly in the UI, prefixed with `|SERVER|`. */
+/* Handle Command from server: display with |SERVER| prefix */
 async fn handle_command(app: &AppHandle, msg: FctpMessage) {
     ui_emit_fctp_message(app, format!("|SERVER| {}", msg.body));
     LAST_ACK.store(true, Ordering::Relaxed);
 }
 
-/*  Handles various error messages from the server.
-It displays the error in the UI and sets a global flag indicating a request error. */
+/* Handle error messages: emit and set REQUEST_ERROR */
 async fn handle_error(app: &AppHandle, msg: FctpMessage, error_type: &str) {
     ui_emit_fctp_message(app, format!("[!{}!] {}", error_type, msg.body));
     LAST_ACK.store(true, Ordering::Relaxed);
     REQUEST_ERROR.store(true, Ordering::Relaxed);
 }
 
-/*  Handles the initial `Hello` message from the server.
-This is used to set the client's own ID and the server's ID. */
+/* Handle Hello: set client ID and server ID if applicable */
 async fn handle_hello(_app: &AppHandle, msg: FctpMessage) {
     if msg.body == "id" {
         protocol_utils::fctp_me::set_id(&msg.to);
@@ -456,8 +412,7 @@ async fn handle_hello(_app: &AppHandle, msg: FctpMessage) {
     }
 }
 
-/*  Handles a `Pong` message from the server.
-It updates the timestamp of the last received pong, which is used for keep-alive checks. */
+/* Handle Pong: update last_pong timestamp */
 async fn handle_pong(last_pong: &Arc<Mutex<Instant>>) {
     let mut pong_time = last_pong.lock().await;
     *pong_time = Instant::now();
