@@ -20,9 +20,12 @@ use crate::{
     crypt::{self},
     ui_emit_status,
 };
+
+/* Timeouts used during handshake and key requests */
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEY_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/* Global exchange/session/E2EE state */
 lazy_static! {
     static ref EXCHANGE_PUB: RwLock<PublicKey> = RwLock::new(PublicKey::from([0u8; 32]));
     static ref EXCHANGE_SEC: RwLock<StaticSecret> = RwLock::new(StaticSecret::from([0u8; 32]));
@@ -31,42 +34,53 @@ lazy_static! {
     static ref E2EE_SEC: RwLock<StaticSecret> = RwLock::new(StaticSecret::from([0u8; 32]));
     pub static ref E2EE_KEY_TABLE: RwLock<HashMap<String, PublicKey>> = RwLock::new(HashMap::new());
 }
-//EXCHANGE
+
+/* Exchange key helpers */
 pub fn set_exchange(new_pubkey: PublicKey, new_sec: StaticSecret) {
     let mut pubkey = EXCHANGE_PUB.write().expect("Lock poisoned");
     *pubkey = new_pubkey;
     let mut sec = EXCHANGE_SEC.write().expect("Lock poisoned");
     *sec = new_sec;
 }
+
+/* Return the current exchange public key */
 pub fn get_exchange_pub() -> PublicKey {
     EXCHANGE_PUB.read().expect("Lock poisoned").clone()
 }
+
+/* Return the current exchange secret */
 pub fn get_exchange_sec() -> StaticSecret {
     EXCHANGE_SEC.read().expect("Lock poisoned").clone()
 }
 
-//SESSION
+/* Session key helpers */
 pub fn set_session_key(new_session_key: Key<Aes256Gcm>) {
     let mut key = SESSION_KEY.write().expect("Lock poisoned");
     *key = new_session_key;
 }
+
+/* Return the active session key */
 pub fn get_session_key() -> Key<Aes256Gcm> {
     SESSION_KEY.read().expect("Lock poisoned").clone()
 }
-//E2EE
+
+/* E2EE key helpers */
 pub fn set_e2ee(new_pubkey: PublicKey, new_sec: StaticSecret) {
     let mut pubkey = E2EE_PUB.write().expect("Lock poisoned");
     *pubkey = new_pubkey;
     let mut sec = E2EE_SEC.write().expect("Lock poisoned");
     *sec = new_sec;
 }
+
 pub fn get_e2ee_pub() -> PublicKey {
     E2EE_PUB.read().expect("Lock poisoned").clone()
 }
+
 pub fn get_e2ee_sec() -> StaticSecret {
     E2EE_SEC.read().expect("Lock poisoned").clone()
 }
 
+/* E2EE key table helpers */
 pub fn get_pk_from_e2ee_key_table(username: &str) -> Option<PublicKey> {
     E2EE_KEY_TABLE
         .read()
@@ -74,6 +88,7 @@ pub fn get_pk_from_e2ee_key_table(username: &str) -> Option<PublicKey> {
         .get(username)
         .cloned()
 }
+
 pub fn has_pk_in_e2ee_key_table(username: &str) -> bool {
     E2EE_KEY_TABLE
         .read()
@@ -81,7 +96,7 @@ pub fn has_pk_in_e2ee_key_table(username: &str) -> bool {
         .contains_key(username)
 }
 
-// Remove a public key entry by username. Returns true if an entry was removed.
+/* Remove a public key entry by username. Returns true if removed. */
 pub fn remove_pk_from_e2ee_key_table(username: &str) -> bool {
     if let Ok(mut table) = E2EE_KEY_TABLE.write() {
         table.remove(username).is_some()
@@ -91,8 +106,7 @@ pub fn remove_pk_from_e2ee_key_table(username: &str) -> bool {
     }
 }
 
-// Remove the public key for username only if it matches the provided key.
-// Returns true if removed.
+/* Conditionally remove a public key if it matches the provided key */
 #[allow(unused)]
 pub fn remove_pk_if_matches(username: &str, key: PublicKey) -> bool {
     if let Ok(mut table) = E2EE_KEY_TABLE.write() {
@@ -109,7 +123,7 @@ pub fn remove_pk_if_matches(username: &str, key: PublicKey) -> bool {
     }
 }
 
-// Clear the entire E2EE key table.
+/* Clear the E2EE key table */
 #[allow(unused)]
 pub fn clear_e2ee_key_table() {
     if let Ok(mut table) = E2EE_KEY_TABLE.write() {
@@ -119,6 +133,7 @@ pub fn clear_e2ee_key_table() {
     }
 }
 
+/* Handle an incoming handshake-phase message (plaintext base64). */
 pub async fn handle_handshake_message(
     data: &[u8],
     app: &AppHandle,
@@ -135,16 +150,17 @@ pub async fn handle_handshake_message(
     println!("Decoded {} bytes", decoded.len());
 
     if get_exchange_pub() == PublicKey::from([0u8; 32]) {
-        // Certificate Public Key phase
+        /* Certificate public key phase */
         println!("Processing certificate exchange...");
         handle_certificate_exchange(decoded, app, tx, fp_verified).await
     } else {
-        // Session key phase
+        /* Session key exchange phase */
         println!("Processing session key exchange...");
         handle_session_key_exchange(decoded, app, tx).await
     }
 }
 
+/* Process certificate exchange: verify fingerprint, generate exchange key */
 pub async fn handle_certificate_exchange(
     decoded: Vec<u8>,
     app: &AppHandle,
@@ -159,13 +175,13 @@ pub async fn handle_certificate_exchange(
         <[u8; 32]>::try_from(decoded.as_slice()).map_err(|_| "Failed to convert to key array")?,
     );
 
-    // Request fingerprint verification
+    /* Request fingerprint verification from UI */
     ui_emit_status(
         app.clone(),
         format!("USER::VERIFY_FP::{}", crypt::utils::blake3_hash(&decoded)),
     );
 
-    // Wait for verification with timeout
+    /* Wait for user to verify fingerprint (timeout) */
     let start = Instant::now();
     while !fp_verified.load(Ordering::Relaxed) {
         if start.elapsed() > HANDSHAKE_TIMEOUT {
@@ -174,7 +190,7 @@ pub async fn handle_certificate_exchange(
         sleep(Duration::from_millis(100)).await;
     }
 
-    // Generate and send exchange key
+    /* Generate exchange keypair and send encrypted public part to server */
     let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
     let rec_sec = StaticSecret::from(rec_sec_bytes);
     let rec_pub = PublicKey::from(rec_pub_bytes);
@@ -189,6 +205,8 @@ pub async fn handle_certificate_exchange(
 
     Ok(())
 }
+
+/* Process session key exchange: decrypt session key and finish handshake */
 pub async fn handle_session_key_exchange(
     decoded: Vec<u8>,
     _app: &AppHandle,
@@ -217,7 +235,7 @@ pub async fn handle_session_key_exchange(
 
     sleep(Duration::from_millis(100)).await;
 
-    // Request ID from server
+    /* Request assigned ID from server */
     println!("Requesting ID from server...");
     let server_id = fctp::get_server_id().unwrap_or_default();
     let packet = fctp::encapsulate_to_fctp(
@@ -227,7 +245,7 @@ pub async fn handle_session_key_exchange(
     .map_err(|e| format!("FctpError creating Hello: {:?}", e))?;
     tx.send(packet).await?;
 
-    // Generate and send E2EE public key
+    /* Generate and send E2EE public key to server */
     println!("Generating E2EE keypair...");
     let (rec_sec_bytes, rec_pub_bytes) = asymmetric::keypairgen();
     let rec_sec = StaticSecret::from(rec_sec_bytes);
@@ -252,6 +270,8 @@ pub async fn handle_session_key_exchange(
     println!("OK: Handshake complete!");
     Ok(())
 }
+
+/* Send a KeyRequest to the server for the given recipient */
 async fn request_public_key(recipient: &str) -> Result<(), String> {
     let server_id = fctp::get_server_id().map_err(|e| format!("Failed to get server ID: {}", e))?;
 
@@ -269,10 +289,11 @@ async fn request_public_key(recipient: &str) -> Result<(), String> {
     send_packet(packet).await
 }
 
+/* Request a recipient's public key and wait (with timeout) for a response */
 pub async fn handle_non_existent_e2ee_key(recipient: &str) -> Result<(), String> {
     request_public_key(recipient.trim()).await?;
 
-    // Wait for key with timeout
+    /* wait for LAST_ACK to be set by incoming KeyRequest response */
     let start = Instant::now();
     Ok(while !fctp::LAST_ACK.load(Ordering::Relaxed) {
         if start.elapsed() > KEY_REQUEST_TIMEOUT {
@@ -282,6 +303,7 @@ pub async fn handle_non_existent_e2ee_key(recipient: &str) -> Result<(), String>
     })
 }
 
+/* Handle incoming KeyRequest responses from server */
 pub async fn handle_e2ee_key_request(_app: &AppHandle, msg: FctpMessage) {
     let key_bytes = match base64_decode(&msg.body.trim()) {
         Ok(bytes) => bytes,
