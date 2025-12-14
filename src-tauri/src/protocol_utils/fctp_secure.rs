@@ -174,11 +174,11 @@ pub async fn handle_certificate_exchange(
     let cert_pub = PublicKey::from(
         <[u8; 32]>::try_from(decoded.as_slice()).map_err(|_| "Failed to convert to key array")?,
     );
-
     /* Request fingerprint verification from UI */
     ui_emit_status(
         app.clone(),
-        format!("USER::VERIFY_FP::{}", crypt::utils::blake3_hash(&decoded)),
+        "user::verify_fp".into(),
+        &crypt::utils::blake3_hash(&decoded),
     );
 
     /* Wait for user to verify fingerprint (timeout) */
@@ -201,7 +201,7 @@ pub async fn handle_certificate_exchange(
 
     let encoded = crypt::utils::base64_encode(&encrypted);
     tx.send(format!("{}\r\n\r\n", encoded).into_bytes()).await?;
-    ui_emit_status(app.clone(), "OK::CON_ESTABLISHED".to_string());
+    ui_emit_status(app.clone(), "ok", "con_established");
 
     Ok(())
 }

@@ -1,5 +1,6 @@
 mod crypt;
 mod protocol_utils;
+use crate::crypt::utils::base64_encode;
 use crate::protocol_utils::fctp_secure::handle_non_existent_e2ee_key;
 use crate::protocol_utils::fctp_secure::remove_pk_from_e2ee_key_table;
 use aes_gcm::{Aes256Gcm, Key};
@@ -7,6 +8,7 @@ use once_cell::sync::Lazy;
 use protocol_utils::fctp;
 use protocol_utils::fctp_me;
 use protocol_utils::fctp_secure::{get_session_key, set_exchange, set_session_key, E2EE_KEY_TABLE};
+use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,7 +68,8 @@ pub fn run() {
             ui_command_request_connection,
             ui_command_status,
             ui_command_select_recipient,
-            ui_command_remove_recipient
+            ui_command_remove_recipient,
+            ui_command_check_recipient_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -174,7 +177,7 @@ fn ui_command_request_connection(address: &str, app: AppHandle) {
     let address = address.to_owned();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = init_connection(app.clone(), address).await {
-            ui_emit_status(app, format!("E::Connection failed: {}", e));
+            ui_emit_status(app, "error".into(), &format!("Connection failed {}", e));
         }
     });
 }
@@ -211,11 +214,26 @@ async fn ui_command_select_recipient(recipient: String) {
     }
 }
 #[tauri::command]
+async fn ui_command_check_recipient_key(app: AppHandle, recipient: String) {
+    match protocol_utils::fctp_secure::get_pk_from_e2ee_key_table(recipient.trim()) {
+        Some(pk) => {
+            let payload = json!({"status": "ok", "key": base64_encode(pk.as_bytes())});
+            let _ = app.emit("ui_command_check_recipient_key", payload);
+        }
+        None => {
+            let payload =
+                json!({"status": "error", "message": "Failed to retrieve recipient's public key"});
+            let _ = app.emit("ui_command_check_recipient_key", payload);
+        }
+    }
+}
+#[tauri::command]
 async fn ui_command_remove_recipient(recipient: String) {
     remove_pk_from_e2ee_key_table(recipient.trim());
 }
-pub fn ui_emit_status(app: AppHandle, msg: String) {
-    if let Err(e) = app.emit("status", msg) {
+pub fn ui_emit_status(app: AppHandle, status: &str, msg: &str) {
+    let payload = json!({"status": status, "msg": msg});
+    if let Err(e) = app.emit("status", payload) {
         eprintln!("Failed to emit status: {:?}", e);
     }
 }
@@ -251,7 +269,7 @@ async fn cleanup_connection(app: AppHandle) {
 
     *TX.lock().await = None;
     abort_all_tasks().await;
-    ui_emit_status(app, "USER::DISCONNECT".to_string());
+    ui_emit_status(app, "user".into(), "disconnect".into());
 }
 
 /* cleanup_connection: reset keys, clear caches, null TX, abort tasks */

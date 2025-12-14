@@ -17,14 +17,13 @@
             unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
 
-                let status: string = event.payload as string;
-                if (status === "USER::DISCONNECT") {
+                let payload: any = event.payload;
+                if (payload.status == "user" && payload.msg == "disconnect") {
                     navigate("/");
                     tick();
                     toaster.info({ title: "Disconnected" });
-                } else if (status.startsWith("E::")) {
-                    status = status.replace("E::", "");
-                    toaster.info({ title: status });
+                } else if (payload.status == "error") {
+                    toaster.info({ title: payload.msg });
                 }
             });
         }

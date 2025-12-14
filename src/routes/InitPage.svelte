@@ -57,9 +57,9 @@
         if (!unlisten) {
             unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
+                let payload: any = event.payload;
 
-                let status: string = event.payload as string;
-                if (status === "OK::CON_ESTABLISHED" && FpVerified) {
+                if (payload.msg === "con_established" && FpVerified) {
                     isWaiting = false;
                     await store.set("last-connection", {
                         address: $serverAddress,
@@ -67,14 +67,14 @@
                     await store.save();
 
                     navigate("/messages");
-                } else if (status.startsWith("USER::VERIFY_FP")) {
-                    FP = status.split("::")[2];
+                } else if (payload.status == "user::verify_fp") {
+                    FP = payload.msg;
                     FpVerified = false;
                     while (!FpVerified) {
                         await new Promise((resolve) => setTimeout(resolve, 10));
                     }
                     isWaiting = false;
-                } else if (status.startsWith("E::")) {
+                } else if (payload.status == "error") {
                     isWaiting = false;
                 }
             });

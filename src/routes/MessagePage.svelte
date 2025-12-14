@@ -1,42 +1,37 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
-    import { listen } from "@tauri-apps/api/event";
     import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-    import { onDestroy, onMount, tick } from "svelte";
-    import { navigate } from "svelte-routing";
-    import { toaster } from "../lib/toaster-svelte";
+    import { onMount, tick } from "svelte";
     import {
         LogOut,
-        MessageCircleHeart,
         SendHorizontal,
         Server,
-        WatchIcon,
         Users,
-        Hash,
-        Search,
         Settings,
         Menu,
         X,
-        User,
         Plus,
-        Circle,
+        FileKey2,
+        MessageSquareOff,
     } from "@lucide/svelte";
     import { serverAddress } from "../lib/store.js";
 
     const appWebview = getCurrentWebviewWindow();
-    var message = "";
-    var recipient = "";
+    let message = "";
+    let recipient = "";
     let sidebarOpen = false;
     let isMobile = false;
-    let allMessages: string[] = [];
 
     let messages: string[] = [];
     let messagesContainer: HTMLDivElement;
     let AddedRecipientUserName = "";
     let AddedRecipientDisplayName = "";
+    let AddedRecipientPublicKey = "";
+
     interface Recipient {
         id: string;
         name: string;
+        pk: string;
     }
     let addedUsers: Recipient[] = [];
     function addRecipient() {
@@ -45,10 +40,12 @@
             {
                 id: AddedRecipientUserName,
                 name: AddedRecipientDisplayName,
+                pk: AddedRecipientPublicKey,
             },
         ];
         AddedRecipientUserName = "";
         AddedRecipientDisplayName = "";
+        AddedRecipientPublicKey = "";
     }
     function checkMobile() {
         isMobile = window.innerWidth < 640;
@@ -79,10 +76,13 @@
     function sendStatus(status: string) {
         invoke("ui_command_status", { input: status });
     }
+    function checkRecipientKey(userId: string) {
+        invoke("ui_command_check_recipient_key", { recipient: userId });
+    }
 
     function selectRecipient(userId: string) {
         recipient = userId;
-        invoke("ui_command_select_recipient", { recipient: recipient });
+        invoke("ui_command_select_recipient", { recipient: userId });
         if (isMobile) {
             sidebarOpen = false;
         }
@@ -105,6 +105,17 @@
     appWebview.listen<string>("fctp-message", (event) => {
         addMessage(event.payload);
         console.log(event.payload);
+    });
+    appWebview.listen("ui_command_check_recipient_key", (event) => {
+        const payload: any = event.payload;
+        if (payload && payload.status === "ok") {
+            addMessage(`Key (base64): ${payload.key}`);
+        } else if (payload && payload.status === "error") {
+            addMessage(`Error: ${payload.message}`);
+        } else {
+            addMessage(JSON.stringify(payload));
+        }
+        console.log(payload);
     });
     async function addMessage(text: string) {
         let wasAtBottom = false;
@@ -233,6 +244,15 @@
                             <div class="ml-3 flex items-center">
                                 <button
                                     class="p-1 rounded hover:bg-surface-200-800"
+                                    title="Verify authenticity of recipient key"
+                                    on:click={() => checkRecipientKey(user.id)}
+                                >
+                                    {user.pk}
+                                    <FileKey2 />
+                                </button>
+                                <button
+                                    class="p-1 rounded hover:bg-surface-200-800"
+                                    title="Remove a recipient from the list"
                                     on:click={() => removeRecipient(user.id)}
                                 >
                                     <X />
@@ -249,7 +269,7 @@
                     class="w-full flex items-center gap-2 p-2 hover:preset-filled-surface-100-900 rounded-lg transition-colors opacity-70 hover:opacity-100"
                 >
                     <Settings size={16} />
-                    <span class="text-sm">Settings</span>
+                    <span class="text-sm disabled">Settings</span>
                 </button>
             </div>
         </div>
@@ -304,7 +324,7 @@
                 <div
                     class="flex flex-col items-center justify-center h-full text-center p-4"
                 >
-                    <MessageCircleHeart size={48} class="opacity-50 mb-4" />
+                    <MessageSquareOff size={48} class="opacity-50 mb-4" />
                     <h3 class="text-lg font-medium opacity-70 mb-2">
                         No messages yet
                     </h3>
