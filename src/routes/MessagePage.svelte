@@ -43,6 +43,8 @@
                 pk: AddedRecipientPublicKey,
             },
         ];
+        selectRecipient(AddedRecipientUserName);
+
         AddedRecipientUserName = "";
         AddedRecipientDisplayName = "";
         AddedRecipientPublicKey = "";
@@ -57,7 +59,7 @@
     onMount(() => {
         checkMobile();
         window.addEventListener("resize", checkMobile);
-        AddedRecipientDisplayName = "SERVER";
+        AddedRecipientDisplayName = "Server (" + $serverAddress + ")";
         AddedRecipientUserName = "server";
         addRecipient();
     });
@@ -221,18 +223,24 @@
                 <div class="space-y-1">
                     {#each addedUsers as user}
                         <div
-                            class={`w-full p-3 rounded-xl text-left hover:preset-filled-surface-100-900 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-100-900 ring-2 ring-primary-500/30" : ""}`}
+                            class={`w-full rounded-xl text-left hover:preset-filled-surface-100-900 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-100-900 ring-2 ring-primary-500/30" : ""}`}
                         >
                             <button
                                 on:click={() => selectRecipient(user.id)}
-                                class="flex items-center gap-3 flex-1 text-left"
+                                class="flex p-3 items-center gap-3 flex-1 text-left"
                             >
                                 <div class="relative">
-                                    <div
-                                        class="w-10 h-10 preset-filled-primary-400-500 rounded-full flex items-center justify-center text-white font-medium preset-outlined-surface-500"
-                                    >
-                                        {user.name.charAt(0)}
-                                    </div>
+                                    {#if user.id == "server"}<div
+                                            class="w-10 h-10 preset-filled-primary-400-500 flex items-center justify-center text-white font-medium"
+                                        >
+                                            <Server size="24" />
+                                        </div>
+                                    {:else}<div
+                                            class="w-10 h-10 preset-filled-primary-400-500 rounded-full flex items-center justify-center text-white font-medium preset-outlined-surface-500"
+                                        >
+                                            {user.name.charAt(0)}
+                                        </div>
+                                    {/if}
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <p class="text-sm font-medium truncate">
@@ -240,24 +248,29 @@
                                     </p>
                                 </div>
                             </button>
-
-                            <div class="ml-3 flex items-center">
-                                <button
-                                    class="p-1 rounded hover:bg-surface-200-800"
-                                    title="Verify authenticity of recipient key"
-                                    on:click={() => checkRecipientKey(user.id)}
-                                >
-                                    {user.pk}
-                                    <FileKey2 />
-                                </button>
-                                <button
-                                    class="p-1 rounded hover:bg-surface-200-800"
-                                    title="Remove a recipient from the list"
-                                    on:click={() => removeRecipient(user.id)}
-                                >
-                                    <X />
-                                </button>
-                            </div>
+                            <!-- If the user is not server, show the user controls 
+                            like "remove from list" or "verify key"-->
+                            {#if user.id != "server"}
+                                <div class="pr-3 flex items-center">
+                                    <button
+                                        class="p-1 rounded hover:bg-surface-200-800"
+                                        title="Verify authenticity of recipient key"
+                                        on:click={() =>
+                                            checkRecipientKey(user.id)}
+                                    >
+                                        {user.pk}
+                                        <FileKey2 />
+                                    </button>
+                                    <button
+                                        class="p-1 rounded hover:bg-surface-200-800"
+                                        title="Remove a recipient from the list"
+                                        on:click={() =>
+                                            removeRecipient(user.id)}
+                                    >
+                                        <X />
+                                    </button>
+                                </div>
+                            {/if}
                         </div>
                     {/each}
                 </div>
