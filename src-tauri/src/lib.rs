@@ -22,6 +22,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 /* Buffer size */
 const BUFFER_SIZE: usize = 8192;
+const MAX_MESSAGE_BUFFER_SIZE: usize = 10 * 1024 * 1024;
 
 /* Timeout for establishing the TCP connection to the server. */
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -350,6 +351,12 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                         } else {
                             /* Encrypted message phase: accumulate framed messages */
                             message_buffer.extend_from_slice(&buffer[..n]);
+
+                            /* Prevent buffer overflow and close the connection */
+                            if message_buffer.len() > MAX_MESSAGE_BUFFER_SIZE {
+                                eprintln!("Message buffer exceeded max size. Disconnecting.");
+                                break;
+                            }
 
                             /* Prevent unbounded message buffer growth */
                             if message_buffer.len() > BUFFER_SIZE * 4 {

@@ -35,15 +35,21 @@
     }
     let addedUsers: Recipient[] = [];
     function addRecipient() {
-        addedUsers = [
-            ...addedUsers,
-            {
-                id: AddedRecipientUserName,
-                name: AddedRecipientDisplayName,
-                pk: AddedRecipientPublicKey,
-            },
-        ];
-        selectRecipient(AddedRecipientUserName);
+        const exists = addedUsers.some(
+            (user) => user.id === AddedRecipientUserName
+        );
+
+        if (!exists) {
+            addedUsers = [
+                ...addedUsers,
+                {
+                    id: AddedRecipientUserName,
+                    name: AddedRecipientDisplayName,
+                    pk: AddedRecipientPublicKey,
+                },
+            ];
+            selectRecipient(AddedRecipientUserName);
+        }
 
         AddedRecipientUserName = "";
         AddedRecipientDisplayName = "";
