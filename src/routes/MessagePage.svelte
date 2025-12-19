@@ -13,8 +13,10 @@
         Plus,
         FileKey2,
         MessageSquareOff,
+        BrushCleaning,
     } from "@lucide/svelte";
     import { serverAddress } from "../lib/store.js";
+    import { toaster } from "../lib/toaster-svelte";
 
     const appWebview = getCurrentWebviewWindow();
     let message = "";
@@ -125,6 +127,11 @@
         }
         console.log(payload);
     });
+    appWebview.listen("ui_info_server_not_responding", (event) => {
+        const payload: any = event.payload;
+        console.log(payload);
+        toaster.info({ title: "Server not responding", description: payload });
+    });
     async function addMessage(text: string) {
         let wasAtBottom = false;
         if (messagesContainer) {
@@ -148,6 +155,10 @@
     function toggleSidebar() {
         sidebarOpen = !sidebarOpen;
     }
+
+    function clearMessages() {
+        messages = [];
+    }
 </script>
 
 <main class="flex h-full relative">
@@ -168,7 +179,7 @@
         ${sidebarOpen ? "max-sm:translate-x-0 w-80" : isMobile ? "w-80 -translate-x-full" : "w-0"} 
         overflow-hidden 
         border-r
-        rounded-r-xl
+        rounded-r-base
         border-r-surface-200-800 
         body-background-color-dark
     `}
@@ -178,7 +189,7 @@
             <div class="p-4 border-b border-b-surface-200-800">
                 <div class="flex items-center justify-between mb-4">
                     <div class="flex items-center gap-3">
-                        <div class="preset-filled-primary-500 p-2 rounded-lg">
+                        <div class="preset-filled-primary-500 p-2 rounded-base">
                             <Users size={20} />
                         </div>
                         <h2 class="text-lg font-semibold">Users</h2>
@@ -186,7 +197,7 @@
                     {#if isMobile}
                         <button
                             on:click={() => (sidebarOpen = false)}
-                            class="preset-outlined-surface-200-800 p-2 rounded-lg hover:scale-105 transition-transform"
+                            class="preset-outlined-surface-200-800 p-2 rounded-base hover:scale-105 transition-transform"
                         >
                             <X size={20} />
                         </button>
@@ -204,20 +215,20 @@
                                 bind:value={AddedRecipientUserName}
                                 type="text"
                                 placeholder="Username..."
-                                class="input w-full focus:ring-2 focus:ring-primary-500 rounded-lg text-sm"
+                                class="input w-full focus:ring-2 focus:ring-primary-500 rounded-base text-sm"
                                 required
                             />
                             <input
                                 bind:value={AddedRecipientDisplayName}
                                 type="text"
                                 placeholder="Display name..."
-                                class="input w-full focus:ring-2 focus:ring-primary-500 rounded-lg text-sm"
+                                class="input w-full focus:ring-2 focus:ring-primary-500 rounded-base text-sm"
                                 required
                             />
                         </div>
                         <button
                             type="submit"
-                            class="btn px-3 preset-filled-surface-200-800 w-full rounded-lg hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                            class="btn px-3 preset-filled-surface-200-800 w-full rounded-base hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                             ><Plus size={20} /> Add recipient</button
                         >
                     </form>
@@ -225,55 +236,63 @@
             </div>
 
             <!-- Users List -->
-            <div class="flex-1 overflow-y-auto p-2">
+            <div class="flex-1 overflow-y-auto p-4">
                 <div class="space-y-1">
                     {#each addedUsers as user}
                         <div
-                            class={`w-full rounded-xl text-left hover:preset-filled-surface-100-900 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-100-900 ring-2 ring-primary-500/30" : ""}`}
+                            class={`w-full rounded-base text-left hover:preset-filled-primary-300-700 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-500 outline-2 " : ""}`}
                         >
                             <button
                                 on:click={() => selectRecipient(user.id)}
-                                class="flex p-3 items-center gap-3 flex-1 text-left"
+                                class="flex p-3 items-center gap-3 flex-1 text-left min-w-0 overflow-hidden"
                             >
-                                <div class="relative">
-                                    {#if user.id == "server"}<div
-                                            class="w-10 h-10 preset-filled-primary-400-500 flex items-center justify-center text-white font-medium"
+                                <div class="relative flex-shrink-0">
+                                    {#if user.id == "server"}
+                                        <div
+                                            class="w-10 h-10 flex items-center justify-center font-medium"
                                         >
                                             <Server size="24" />
                                         </div>
-                                    {:else}<div
-                                            class="w-10 h-10 preset-filled-primary-400-500 rounded-full flex items-center justify-center text-white font-medium preset-outlined-surface-500"
+                                    {:else}
+                                        <div
+                                            class="w-10 h-10 rounded-base flex items-center justify-center font-medium preset-filled-primary-100-900"
                                         >
-                                            {user.name.charAt(0)}
+                                            <b>{user.name.charAt(0)}</b>
                                         </div>
                                     {/if}
                                 </div>
-                                <div class="flex-1 min-w-0">
-                                    <p class="text-sm font-medium truncate">
+                                <div class="flex-1 min-w-0 overflow-hidden">
+                                    <p
+                                        class={`font-medium truncate ${
+                                            user.id === "server"
+                                                ? "font-mono"
+                                                : ""
+                                        }`}
+                                        title={user.name}
+                                    >
                                         {user.name}
                                     </p>
                                 </div>
                             </button>
-                            <!-- If the user is not server, show the user controls 
-                            like "remove from list" or "verify key"-->
+
+                            <!-- If the user is not server, show the user controls -->
                             {#if user.id != "server"}
-                                <div class="pr-3 flex items-center">
+                                <div class="flex items-center flex-shrink-0">
                                     <button
-                                        class="p-1 rounded hover:bg-surface-200-800"
+                                        class="p-1 rounded-base hover:preset-filled-primary-100-900"
                                         title="Verify authenticity of recipient key"
                                         on:click={() =>
                                             checkRecipientKey(user.id)}
                                     >
-                                        {user.pk}
-                                        <FileKey2 />
+                                        <FileKey2 size={24} />
                                     </button>
                                     <button
-                                        class="p-1 rounded hover:bg-surface-200-800"
+                                        class="p-1 mr-2 rounded-base hover:preset-filled-primary-100-900"
                                         title="Remove a recipient from the list"
                                         on:click={() =>
                                             removeRecipient(user.id)}
                                     >
-                                        <X />
+                                        <X size={24} />
                                     </button>
                                 </div>
                             {/if}
@@ -285,7 +304,7 @@
             <!-- Sidebar Footer -->
             <div class="p-4 border-t border-t-surface-200-800">
                 <button
-                    class="w-full flex items-center gap-2 p-2 hover:preset-filled-surface-100-900 rounded-lg transition-colors opacity-70 hover:opacity-100"
+                    class="w-full flex items-center gap-2 p-2 hover:preset-filled-surface-100-900 rounded-base transition-colors opacity-70 hover:opacity-100"
                 >
                     <Settings size={16} />
                     <span class="text-sm disabled">Settings</span>
@@ -306,20 +325,26 @@
                 <div class="flex items-center gap-2">
                     <button
                         on:click={toggleSidebar}
-                        class="preset-outlined-surface-200-800 p-1 rounded hover:scale-105 transition-transform sm:hidden"
-                    >
-                        <Menu size={16} />
-                    </button>
-                    <button
-                        on:click={toggleSidebar}
-                        class="preset-outlined-surface-200-800 p-1 rounded hover:scale-105 transition-transform hidden sm:block"
+                        class="btn btn-sm preset-outlined-surface-200-800 p-1 hover:scale-105 active:scale-95 transition-transform"
+                        title="Toggle side panel"
                     >
                         <Users size={16} />
                     </button>
+                    <button
+                        on:click={clearMessages}
+                        class="btn btn-sm preset-outlined-surface-200-800 p-1 hover:scale-105 active:scale-95 transition-transform"
+                        title="Clear chat logs"
+                    >
+                        <BrushCleaning size={16} />
+                    </button>
                 </div>
-                <div class="flex items-center gap-2 justify-center">
-                    <Server size={20} />
-                    <h1 class="text-sm sm:text-base truncate">
+                <div
+                    class="flex items-center gap-2 justify-center overflow-hidden"
+                >
+                    <h1
+                        class="text-sm sm:text-base truncate"
+                        title={$serverAddress}
+                    >
                         {$serverAddress}
                     </h1>
                 </div>
@@ -373,12 +398,12 @@
         <!-- Message Input -->
         <div class="mx-4 mb-4">
             <form
-                class="w-full card preset-outlined-surface-200-800 p-3 rounded-xl"
+                class="w-full card preset-outlined-surface-200-800 p-3 rounded-base"
                 on:submit|preventDefault={sendMessage}
             >
                 <div class="grid grid-cols-[1fr_auto] gap-2">
                     <input
-                        class="input rounded-lg focus:ring-2 focus:ring-primary-500"
+                        class="input rounded-base focus:ring-2 focus:ring-primary-500"
                         type="text"
                         placeholder={recipient
                             ? `Message ${recipient}...`
@@ -389,7 +414,7 @@
                     />
 
                     <button
-                        class="btn px-3 preset-filled-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                        class="btn px-3 preset-filled-surface-200-800 rounded-base hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                         type="submit"
                         disabled={!recipient || !message.trim()}
                     >

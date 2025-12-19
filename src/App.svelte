@@ -7,6 +7,7 @@
     import { onDestroy, onMount, tick } from "svelte";
     import { listen } from "@tauri-apps/api/event";
     import { toaster } from "./lib/toaster-svelte";
+    import { Toaster } from "@skeletonlabs/skeleton-svelte";
     export let url = "";
     if (import.meta.env.MODE !== "development") {
         window.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -21,9 +22,15 @@
                 if (payload.status == "user" && payload.msg == "disconnect") {
                     navigate("/");
                     tick();
-                    toaster.info({ title: "Disconnected" });
+                    toaster.info({
+                        title: "Disconnected",
+                        description: "The connection has been closed",
+                    });
                 } else if (payload.status == "error") {
-                    toaster.info({ title: payload.msg });
+                    toaster.info({
+                        title: "Connection Failed",
+                        description: payload.msg,
+                    });
                 }
             });
         }
@@ -40,3 +47,4 @@
     <Route path="/"><InitPage /></Route>
     <Route path="/messages"><MessagesPage /></Route>
 </Router>
+<Toaster {toaster} />
