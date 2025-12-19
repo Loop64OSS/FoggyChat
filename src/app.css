@@ -6,11 +6,14 @@
 @import '@skeletonlabs/skeleton/themes/wintry';
 @import '@skeletonlabs/skeleton/themes/concord';
 @import '@skeletonlabs/skeleton/themes/rose';
+@import '@skeletonlabs/skeleton/themes/mint';
+@import '@skeletonlabs/skeleton/themes/pine';
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
 * {
     -webkit-tap-highlight-color: transparent;
     user-select: none;
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 *:focus {
@@ -26,6 +29,32 @@ body {
 #app {
     height: 100%;
 }
+
+@media (pointer: coarse),
+(hover: none) {
+    [title] {
+        position: relative;
+        display: inline-flex;
+        justify-content: center;
+    }
+
+    [title]:focus::after {
+        content: attr(title);
+        position: absolute;
+        top: 90%;
+        left: 0px;
+        color: var(--base-font-color-dark);
+        background-color: var(--body-background-color-dark);
+        border: 1px solid var(--base-font-color-dark);
+        width: fit-content;
+        padding: 6px;
+        z-index: 100;
+        border-radius: var(--radius-base);
+        font-size: medium;
+    }
+}
+
+
 
 [data-theme='FoggyChat-Default'] {
     --text-scaling: 1.067;
