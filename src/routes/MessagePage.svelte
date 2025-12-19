@@ -165,7 +165,7 @@
     <!-- Mobile Overlay -->
     {#if isMobile && sidebarOpen}
         <button
-            class="fixed inset-0 bg-black/50 z-40 md:hidden"
+            class="fixed inset-0 bg-surface-50-950/50 md:hidden z-50 cursor-default"
             on:click={() => (sidebarOpen = false)}
             aria-label="Close sidebar"
         ></button>
@@ -173,13 +173,13 @@
 
     <!-- Sidebar -->
     <div
-        class={`fixed sm:relative z-50
+        class={`fixed sm:relative z-200
         max-sm:left-0 max-sm:top-0 max-sm:h-full
         transition-all duration-300 
         ${sidebarOpen ? "max-sm:translate-x-0 w-80" : isMobile ? "w-80 -translate-x-full" : "w-0"} 
         overflow-hidden 
         border-r
-        rounded-r-base
+        rounded-r-container
         border-r-surface-200-800 
         body-background-color-dark
     `}
@@ -317,7 +317,7 @@
     <div class="flex-1 flex flex-col min-w-0">
         <!-- Header -->
         <header
-            class="gap-2 grid-cols-[auto_1fr_auto] justify-between mt-2 mx-4 card items-stretch"
+            class="gap-2 grid-cols-[auto_1fr_auto] justify-between mt-2 mx-4 card rounded-container items-stretch"
         >
             <div
                 class="grid grid-cols-[auto_1fr_auto] gap-2 items-center preset-outlined-surface-200-800 card p-2"
@@ -398,7 +398,7 @@
         <!-- Message Input -->
         <div class="mx-4 mb-4">
             <form
-                class="w-full card preset-outlined-surface-200-800 p-3 rounded-base"
+                class="w-full card preset-outlined-surface-200-800 p-3 rounded-container"
                 on:submit|preventDefault={sendMessage}
             >
                 <div class="grid grid-cols-[1fr_auto] gap-2">

@@ -96,7 +96,7 @@
     <div
         class="fixed top-1/2 left-1/2
            z-50 body-background-color dark:body-background-color-dark text-inherit
-           max-w-[640px] w-full rounded-base p-6 shadow-xl space-y-2 animate-fadeIn"
+           max-w-[640px] w-full rounded-container p-6 shadow-xl space-y-2 animate-fadeIn"
     >
         <header class="mb-4 flex flex-col sm:flex-row justify-between">
             <h2
