@@ -9,6 +9,7 @@ use protocol_utils::fctp;
 use protocol_utils::fctp_me;
 use protocol_utils::fctp_secure::{get_session_key, set_exchange, set_session_key, E2EE_KEY_TABLE};
 use serde_json::json;
+use std::fmt::format;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,11 +31,11 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /* If we don't receive a "pong" for this many seconds, we consider the
 connection not responding (used for diagnostics). Separate from the
 lower-level TCP disconnect detection. */
-const PONG_TIMEOUT_SECS: u64 = 240;
+const PONG_TIMEOUT_SECS: u64 = 60;
 
 /* Interval between periodic ping messages sent to the server to keep the
 session alive and detect stale connections. */
-const PING_INTERVAL_SECS: u64 = 120; /* 2 minutes */
+const PING_INTERVAL_SECS: u64 = 30;
 
 /* TASKS: helps to terminate tasks later and manage them */
 static TASKS: Lazy<Arc<Mutex<Vec<JoinHandle<()>>>>> =
@@ -178,7 +179,7 @@ fn ui_command_request_connection(address: &str, app: AppHandle) {
     let address = address.to_owned();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = init_connection(app.clone(), address).await {
-            ui_emit_status(app, "error".into(), &format!("Connection failed {}", e));
+            ui_emit_status(app, "error".into(), &format!("{}", e));
         }
     });
 }
@@ -466,10 +467,11 @@ async fn stream_handler(app: AppHandle, stream: TcpStream) {
                 if get_session_key() == Key::<Aes256Gcm>::default() {
                     *last_pong_clone.lock().await = Instant::now();
                 } else if elapsed.as_secs() > PONG_TIMEOUT_SECS {
-                    println!(
-                        "Server not responding, last pong: {} ms ago",
-                        elapsed.as_millis()
+                    let _ = app.emit(
+                        "ui_info_server_not_responding",
+                        format!("Last pong: {} ms ago", elapsed.as_millis()),
                     );
+                    println!("Last pong: {} ms ago", elapsed.as_millis());
                 }
             }
         });

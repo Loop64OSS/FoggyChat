@@ -96,14 +96,17 @@
     <div
         class="fixed top-1/2 left-1/2
            z-50 body-background-color dark:body-background-color-dark text-inherit
-           max-w-[640px] w-full rounded-xl p-6 shadow-xl space-y-2 animate-fadeIn"
+           max-w-[640px] w-full rounded-base p-6 shadow-xl space-y-2 animate-fadeIn"
     >
         <header class="mb-4 flex flex-col sm:flex-row justify-between">
-            <h2 class="text-2xl font-semibold">
+            <h2
+                class="text-2xl font-semibold truncate mr-4"
+                title={$serverAddress}
+            >
                 Connecting to {$serverAddress}
             </h2>
             <button
-                class="btn preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform"
+                class="btn preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform h-fit"
                 on:click={(_) => {
                     isWaiting = false;
                     FpVerified = true;
@@ -152,8 +155,8 @@
     </div>
 {/if}
 
-<main class="flex flex-col justify-center h-full">
-    <div class="m-auto">
+<main class="flex flex-col justify-center h-full max-w-dvw">
+    <div class="m-auto max-w-dvw">
         <div class=" mx-2">
             <div class="flex items-center gap-4 mb-4">
                 <p class="text-2xl">FoggyChat</p>
@@ -163,7 +166,7 @@
                 <div class="flex flex-col">
                     <div class="grid grid-cols-[1fr_auto] gap-2">
                         <input
-                            class="input rounded-lg focus:ring-2 focus:ring-primary-500"
+                            class="input rounded-base focus:ring-2 focus:ring-primary-500"
                             id="msginput"
                             type="text"
                             placeholder="Server address"
@@ -172,7 +175,7 @@
                         />
 
                         <button
-                            class="btn px-3 preset-filled-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
+                            class="btn px-3 preset-filled-surface-200-800 rounded-base hover:scale-105 active:scale-95 transition-transform"
                             type="submit"
                         >
                             Connect
@@ -180,7 +183,7 @@
                     </div>
                     {#if lastConnectionAddress}
                         <button
-                            class="btn mt-2 preset-outlined-surface-200-800 rounded-lg hover:scale-105 active:scale-95 transition-transform"
+                            class="btn mt-2 preset-outlined-surface-200-800 rounded-base hover:scale-105 active:scale-95 transition-transform truncate"
                             on:click={fillConnectionAddress}
                             type="button"
                             >Click to fill: {lastConnectionAddress}</button
@@ -195,7 +198,6 @@
         <p>© Loop64™ / FOG Privacy Toolkit</p>
     </div>
 </main>
-<Toaster {toaster} />
 
 <style>
     @keyframes fadeIn {
