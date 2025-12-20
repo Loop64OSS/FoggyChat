@@ -99,10 +99,7 @@
            max-w-[640px] w-full rounded-container p-6 shadow-xl space-y-2 animate-fadeIn"
     >
         <header class="mb-4 flex flex-col sm:flex-row justify-between">
-            <h2
-                class="text-2xl font-semibold text-clip mr-4"
-                title={$serverAddress}
-            >
+            <h2 class="text-2xl font-semibold text-clip mr-4 break-all">
                 Connecting to {$serverAddress}
             </h2>
             <button
@@ -183,7 +180,7 @@
                     </div>
                     {#if lastConnectionAddress}
                         <button
-                            class="btn mt-2 preset-outlined-surface-200-800 rounded-base hover:scale-105 active:scale-95 transition-transform truncate"
+                            class="btn mt-2 preset-outlined-surface-200-800 rounded-base hover:scale-105 active:scale-95 max-w-screen transition-transform break-all whitespace-normal"
                             on:click={fillConnectionAddress}
                             type="button"
                             >Click to fill: {lastConnectionAddress}</button
