@@ -243,8 +243,9 @@
                             class={`w-full rounded-base text-left hover:preset-filled-primary-300-700 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-500 outline-2 " : ""}`}
                         >
                             <button
+                                title={user.name}
                                 on:click={() => selectRecipient(user.id)}
-                                class="flex p-3 items-center gap-3 flex-1 text-left min-w-0 overflow-hidden"
+                                class="flex p-3 items-center gap-3 flex-1 text-left min-w-0"
                             >
                                 <div class="relative flex-shrink-0">
                                     {#if user.id == "server"}
@@ -268,7 +269,6 @@
                                                 ? "font-mono"
                                                 : ""
                                         }`}
-                                        title={user.name}
                                     >
                                         {user.name}
                                     </p>

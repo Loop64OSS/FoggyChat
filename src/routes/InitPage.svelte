@@ -100,7 +100,7 @@
     >
         <header class="mb-4 flex flex-col sm:flex-row justify-between">
             <h2
-                class="text-2xl font-semibold truncate mr-4"
+                class="text-2xl font-semibold text-clip mr-4"
                 title={$serverAddress}
             >
                 Connecting to {$serverAddress}
