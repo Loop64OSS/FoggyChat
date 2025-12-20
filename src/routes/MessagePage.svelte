@@ -14,6 +14,7 @@
         FileKey2,
         MessageSquareOff,
         BrushCleaning,
+        Info,
     } from "@lucide/svelte";
     import { serverAddress } from "../lib/store.js";
     import { toaster } from "../lib/toaster-svelte";
@@ -243,7 +244,6 @@
                             class={`w-full rounded-base text-left hover:preset-filled-primary-300-700 transition-colors flex items-center justify-between ${recipient === user.id ? "preset-filled-primary-500 outline-2 " : ""}`}
                         >
                             <button
-                                title={user.name}
                                 on:click={() => selectRecipient(user.id)}
                                 class="flex p-3 items-center gap-3 flex-1 text-left min-w-0"
                             >
@@ -264,7 +264,7 @@
                                 </div>
                                 <div class="flex-1 min-w-0 overflow-hidden">
                                     <p
-                                        class={`font-medium truncate ${
+                                        class={`font-medium break-all ${
                                             user.id === "server"
                                                 ? "font-mono"
                                                 : ""
@@ -337,17 +337,14 @@
                     >
                         <BrushCleaning size={16} />
                     </button>
-                </div>
-                <div
-                    class="flex items-center gap-2 justify-center overflow-hidden"
-                >
-                    <h1
-                        class="text-sm sm:text-base truncate"
-                        title={$serverAddress}
+                    <button
+                        class="btn btn-sm preset-outlined-surface-200-800 p-1 hover:scale-105 active:scale-95 transition-transform"
+                        title="You are connected to: {$serverAddress}"
                     >
-                        {$serverAddress}
-                    </h1>
+                        <Info size={16} />
+                    </button>
                 </div>
+                <div></div>
                 <button
                     class="btn btn-sm preset-filled-error-200-800 hover:scale-105 active:scale-95 transition-transform"
                     on:click={disconnectFromServer}
