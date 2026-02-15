@@ -65,3 +65,7 @@ key.properties
 
 /.tauri
 /tauri.settings.gradle
+
+
+.env
+*.env
