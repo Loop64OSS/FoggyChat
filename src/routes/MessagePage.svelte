@@ -25,7 +25,9 @@
     let sidebarOpen = false;
     let isMobile = false;
 
-    let messages: string[] = [];
+    let chatHistories: Record<string, string[]> = {};
+
+    $: currentMessages = chatHistories[recipient] || [];
     let messagesContainer: HTMLDivElement;
     let AddedRecipientUserName = "";
     let AddedRecipientDisplayName = "";
@@ -39,7 +41,7 @@
     let addedUsers: Recipient[] = [];
     function addRecipient() {
         const exists = addedUsers.some(
-            (user) => user.id === AddedRecipientUserName
+            (user) => user.id === AddedRecipientUserName,
         );
 
         if (!exists) {
@@ -102,8 +104,10 @@
         // Remove the user from the addedUsers list
         invoke("ui_command_remove_recipient", { recipient: id });
         addedUsers = addedUsers.filter((u) => u.id !== id);
-
-        // If the removed user was the currently selected recipient, clear selection
+        chatHistories = {
+            ...chatHistories,
+            [recipient]: [],
+        }; // If the removed user was the currently selected recipient, clear selection
         if (recipient === id) {
             recipient = "";
             // notify backend about deselection
@@ -113,18 +117,19 @@
     const scrollToBottom = async (obj: HTMLDivElement) => {
         obj.scroll({ top: obj.scrollHeight, behavior: "smooth" });
     };
-    appWebview.listen<string>("fctp-message", (event) => {
-        addMessage(event.payload);
-        console.log(event.payload);
+    appWebview.listen<any>("fctp-message", (event) => {
+        const { sender, content } = event.payload;
+
+        addMessage(content, sender);
     });
     appWebview.listen("ui_command_check_recipient_key", (event) => {
         const payload: any = event.payload;
         if (payload && payload.status === "ok") {
-            addMessage(`Key (base64): ${payload.key}`);
+            addMessage(`Key (base64): ${payload.key}`, "server");
         } else if (payload && payload.status === "error") {
-            addMessage(`Error: ${payload.message}`);
+            addMessage(`Error: ${payload.message}`, "server");
         } else {
-            addMessage(JSON.stringify(payload));
+            addMessage(JSON.stringify(payload), "server");
         }
         console.log(payload);
     });
@@ -133,19 +138,24 @@
         console.log(payload);
         toaster.info({ title: "Server not responding", description: payload });
     });
-    async function addMessage(text: string) {
-        let wasAtBottom = false;
-        if (messagesContainer) {
-            wasAtBottom =
-                messagesContainer.scrollHeight -
-                    messagesContainer.scrollTop -
-                    messagesContainer.clientHeight <
-                80;
-        }
-        messages = [...messages, text];
+    async function addMessage(text: string, senderId: string) {
+        chatHistories = {
+            ...chatHistories,
+            [senderId]: [...(chatHistories[senderId] || []), text],
+        };
+
         await tick();
-        if (wasAtBottom && messagesContainer) {
+
+        if (recipient === senderId && messagesContainer) {
             scrollToBottom(messagesContainer);
+        }
+        if (senderId == "server") {
+            toaster.info({
+                title: "Server",
+                description: text,
+                closable: true,
+                type: "info",
+            });
         }
     }
 
@@ -155,10 +165,6 @@
 
     function toggleSidebar() {
         sidebarOpen = !sidebarOpen;
-    }
-
-    function clearMessages() {
-        messages = [];
     }
 </script>
 
@@ -330,13 +336,7 @@
                     >
                         <Users size={16} />
                     </button>
-                    <button
-                        on:click={clearMessages}
-                        class="btn btn-sm preset-outlined-surface-200-800 p-1 hover:scale-105 active:scale-95 transition-transform"
-                        title="Clear chat logs"
-                    >
-                        <BrushCleaning size={16} />
-                    </button>
+
                     <button
                         class="btn btn-sm preset-outlined-surface-200-800 p-1 hover:scale-105 active:scale-95 transition-transform"
                         title="You are connected to: {$serverAddress}"
@@ -361,7 +361,7 @@
             id="message-container"
             class="flex-1 overflow-y-scroll m-4 space-y-2 h-full card"
         >
-            {#if messages.length === 0}
+            {#if currentMessages.length === 0}
                 <div
                     class="flex flex-col items-center justify-center h-full text-center p-4"
                 >
@@ -376,17 +376,11 @@
                     </p>
                 </div>
             {:else}
-                {#each messages as msg, index}
+                {#each currentMessages as msg, index}
                     <div
                         class="preset-filled-surface-100-900 card p-3 break-words"
                     >
                         <p class="text-sm leading-relaxed">{msg}</p>
-                        <div class="text-xs opacity-50 mt-1">
-                            {new Date().toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                            })}
-                        </div>
                     </div>
                 {/each}
             {/if}

@@ -1,5 +1,6 @@
 use aes_gcm::{Aes256Gcm, Key};
 use lazy_static::lazy_static;
+use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
@@ -297,7 +298,7 @@ fn parse_header_field(line: Option<&str>, field_name: &str) -> Result<String> {
 }
 
 /* Emit a message to the Tauri frontend */
-pub fn ui_emit_fctp_message(app: &AppHandle, msg: String) {
+pub fn ui_emit_fctp_message(app: &AppHandle, msg: Value) {
     if let Err(e) = app.emit("fctp-message", msg) {
         eprintln!("Failed to emit message: {:?}", e);
     }
@@ -310,10 +311,9 @@ pub async fn process_fctp_stream(
     last_pong: &Arc<Mutex<Instant>>,
 ) {
     if message.len() > MAX_MESSAGE_SIZE {
-        ui_emit_fctp_message(
-            &app,
-            format!("[!Error!] Message too large: {} bytes", message.len()),
-        );
+        let payload = json!({"sender": "server", "content":format!("[!Error!] Message too large: {} bytes", message.len())
+        });
+        ui_emit_fctp_message(&app, payload);
         return;
     }
 
@@ -326,7 +326,9 @@ pub async fn process_fctp_stream(
             } else {
                 msg_preview.to_string()
             };
-            ui_emit_fctp_message(&app, format!("[!Malformed message!]: {} - {}", preview, e));
+            let payload = json!({"sender": "server", "content":format!("[!Malformed message!]: {} - {}", preview, e)
+            });
+            ui_emit_fctp_message(&app, payload);
             return;
         }
     };
@@ -350,14 +352,11 @@ pub async fn process_fctp_stream(
             protocol_utils::fctp_secure::handle_e2ee_key_request(&app, fctp_message).await
         }
         FctpCode::Pong => handle_pong(last_pong).await,
+
         _ => {
-            ui_emit_fctp_message(
-                &app,
-                format!(
-                    "[!Unsupported code!]: {:?}\nUpdate your client or contact server admin!",
-                    fctp_message.code
-                ),
-            );
+            let payload = json!({"sender": "server", "content": "[!Unsupported code!]: {:?}\nUpdate your client or contact server admin!"
+            });
+            ui_emit_fctp_message(&app, payload);
         }
     }
 }
@@ -380,24 +379,32 @@ async fn handle_message(app: &AppHandle, msg: FctpMessage) {
         }
     };
 
-    let formatted_msg = format!(
-        "<{}> {}",
-        msg.from,
-        String::from_utf8_lossy(&decrypted).trim()
-    );
-    ui_emit_fctp_message(app, formatted_msg);
+    let content = String::from_utf8_lossy(&decrypted).to_string();
+    let payload = json!({
+        "sender": msg.from,
+        "content": content
+    });
+    ui_emit_fctp_message(app, payload);
     LAST_ACK.store(true, Ordering::Relaxed);
 }
 
 /* Handle Command from server: display with |SERVER| prefix */
 async fn handle_command(app: &AppHandle, msg: FctpMessage) {
-    ui_emit_fctp_message(app, format!("|SERVER| {}", msg.body));
+    let payload = json!({
+        "sender": "server",
+        "content": msg.body
+    });
+
+    ui_emit_fctp_message(app, payload);
     LAST_ACK.store(true, Ordering::Relaxed);
 }
 
 /* Handle error messages: emit and set REQUEST_ERROR */
 async fn handle_error(app: &AppHandle, msg: FctpMessage, error_type: &str) {
-    ui_emit_fctp_message(app, format!("[!{}!] {}", error_type, msg.body));
+    let payload =
+        json!({"sender": "server", "content": format!("[!{}!] {}", error_type, msg.body)});
+
+    ui_emit_fctp_message(app, payload);
     LAST_ACK.store(true, Ordering::Relaxed);
     REQUEST_ERROR.store(true, Ordering::Relaxed);
 }
