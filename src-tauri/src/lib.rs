@@ -9,7 +9,6 @@ use protocol_utils::fctp;
 use protocol_utils::fctp_me;
 use protocol_utils::fctp_secure::{get_session_key, set_exchange, set_session_key, E2EE_KEY_TABLE};
 use serde_json::json;
-use std::fmt::format;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

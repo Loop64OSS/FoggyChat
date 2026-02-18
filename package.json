@@ -22,12 +22,12 @@
         "vite": "^7.0.4"
     },
     "dependencies": {
-        "@lucide/svelte": "^0.537.0",
-        "@tailwindcss/vite": "^4.1.11",
-        "@tauri-apps/api": "^2.7.0",
-        "@tauri-apps/plugin-notification": "^2.3.0",
-        "@tauri-apps/plugin-process": "^2.3.0",
-        "@tauri-apps/plugin-store": "^2.4.0",
-        "tailwindcss": "^4.1.11"
+        "@lucide/svelte": "^0.574.0",
+        "@tailwindcss/vite": "^4.1.18",
+        "@tauri-apps/api": "^2.10.1",
+        "@tauri-apps/plugin-notification": "^2.3.3",
+        "@tauri-apps/plugin-process": "^2.3.1",
+        "@tauri-apps/plugin-store": "^2.4.2",
+        "tailwindcss": "^4.1.18"
     }
 }
