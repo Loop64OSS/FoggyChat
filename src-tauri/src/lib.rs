@@ -158,7 +158,8 @@ async fn handle_regular_message(
     /* Only mirror the message if no request error occurred */
     if !fctp::REQUEST_ERROR.load(Ordering::Relaxed) {
         let formatted_msg = format!("[You] {}", message.trim());
-        fctp::ui_emit_fctp_message(app, formatted_msg);
+        let payload = json!({"sender": recipient.trim(), "content": formatted_msg});
+        fctp::ui_emit_fctp_message(app, payload);
     }
 
     Ok(())

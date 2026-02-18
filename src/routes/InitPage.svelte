@@ -49,7 +49,7 @@
             defaults: {},
         });
         const lastConnection = await store.get<{ address: string }>(
-            "last-connection"
+            "last-connection",
         );
         lastConnectionAddress = lastConnection?.address ?? "";
 
@@ -157,7 +157,7 @@
         <div class=" mx-2">
             <div class="flex items-center gap-4 mb-4">
                 <p class="text-2xl">FoggyChat</p>
-                <p class="text">DEV/2.2</p>
+                <p class="text">DEV/3</p>
             </div>
             <form on:submit|preventDefault={handleConnect}>
                 <div class="flex flex-col">
