@@ -1,8 +1,6 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
     import { navigate } from "svelte-routing";
-    import { Toaster } from "@skeletonlabs/skeleton-svelte";
-    import { toaster } from "../lib/toaster-svelte";
     import { Progress } from "@skeletonlabs/skeleton-svelte";
     import { onDestroy, onMount } from "svelte";
     import { listen } from "@tauri-apps/api/event";
@@ -12,9 +10,8 @@
     import {
         isPermissionGranted,
         requestPermission,
-        sendNotification,
     } from "@tauri-apps/plugin-notification";
-    import { Check, GlobeLock, LogIn, X } from "@lucide/svelte";
+    import { Check, X } from "@lucide/svelte";
     let isWaiting: boolean = false;
     let unlisten: () => void;
     let FpVerified: boolean = true;
@@ -42,8 +39,6 @@
         $serverAddress = lastConnectionAddress;
     }
     onMount(async () => {
-        requestPermissions();
-
         const store = await load("store.json", {
             autoSave: false,
             defaults: {},
@@ -55,6 +50,8 @@
 
         //Status listening from backend
         if (!unlisten) {
+            requestPermissions();
+
             unlisten = await listen("status", async (event) => {
                 console.log("[status]", event.payload);
                 let payload: any = event.payload;

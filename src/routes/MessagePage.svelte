@@ -1,23 +1,22 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
     import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-    import { onMount, tick } from "svelte";
+    import { onMount, onDestroy, tick } from "svelte";
     import {
         LogOut,
         SendHorizontal,
         Server,
         Users,
         Settings,
-        Menu,
         X,
         Plus,
         FileKey2,
         MessageSquareOff,
-        BrushCleaning,
         Info,
     } from "@lucide/svelte";
     import { serverAddress } from "../lib/store.js";
     import { toaster } from "../lib/toaster-svelte";
+    import { sendNotification } from "@tauri-apps/plugin-notification";
 
     const appWebview = getCurrentWebviewWindow();
     let message = "";
@@ -32,6 +31,12 @@
     let AddedRecipientUserName = "";
     let AddedRecipientDisplayName = "";
     let AddedRecipientPublicKey = "";
+    let unlistenFctp: (() => void) | undefined;
+    let unlistenCheckRecipientKey: (() => void) | undefined;
+    let unlistenServerNotResponding: (() => void) | undefined;
+    let unlistenBlur: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+    let isBlurred = false;
 
     interface Recipient {
         id: string;
@@ -67,12 +72,76 @@
         }
     }
 
-    onMount(() => {
+    onMount(async () => {
         checkMobile();
         window.addEventListener("resize", checkMobile);
         AddedRecipientDisplayName = "Server (" + $serverAddress + ")";
         AddedRecipientUserName = "server";
         addRecipient();
+
+        // Register Tauri webview listeners and keep unlisten handles
+        try {
+            // Track webview focus/blur to avoid sending notifications when focused
+            unlistenBlur = await appWebview.listen("tauri://blur", () => {
+                isBlurred = true;
+            });
+            unlistenFocus = await appWebview.listen("tauri://focus", () => {
+                isBlurred = false;
+            });
+
+            unlistenFctp = await appWebview.listen<any>(
+                "fctp-message",
+                async (event) => {
+                    const { sender, content } = event.payload;
+                    addMessage(content, sender);
+                    // Send a native notification only when the webview is blurred
+                    if (isBlurred) {
+                        sendNotification({
+                            title: "FoggyChat",
+                            body: sender + ": " + content,
+                        });
+                    }
+                    addedUsers.forEach((user) => {
+                        if (sender != user) {
+                            AddedRecipientDisplayName = sender;
+                            AddedRecipientUserName = sender;
+                            addRecipient();
+                            AddedRecipientDisplayName = "";
+                            AddedRecipientDisplayName = "";
+                        }
+                    });
+                },
+            );
+
+            unlistenCheckRecipientKey = await appWebview.listen(
+                "ui_command_check_recipient_key",
+                (event) => {
+                    const payload: any = event.payload;
+                    if (payload && payload.status === "ok") {
+                        addMessage(`Key (base64): ${payload.key}`, "server");
+                    } else if (payload && payload.status === "error") {
+                        addMessage(`Error: ${payload.message}`, "server");
+                    } else {
+                        addMessage(JSON.stringify(payload), "server");
+                    }
+                    console.log(payload);
+                },
+            );
+
+            unlistenServerNotResponding = await appWebview.listen(
+                "ui_info_server_not_responding",
+                (event) => {
+                    const payload: any = event.payload;
+                    console.log(payload);
+                    toaster.info({
+                        title: "Server not responding",
+                        description: payload,
+                    });
+                },
+            );
+        } catch (e) {
+            console.warn("Failed to register webview listeners", e);
+        }
     });
 
     function sendMessage() {
@@ -106,7 +175,7 @@
         addedUsers = addedUsers.filter((u) => u.id !== id);
         chatHistories = {
             ...chatHistories,
-            [recipient]: [],
+            [id]: [],
         }; // If the removed user was the currently selected recipient, clear selection
         if (recipient === id) {
             recipient = "";
@@ -117,27 +186,6 @@
     const scrollToBottom = async (obj: HTMLDivElement) => {
         obj.scroll({ top: obj.scrollHeight, behavior: "smooth" });
     };
-    appWebview.listen<any>("fctp-message", (event) => {
-        const { sender, content } = event.payload;
-
-        addMessage(content, sender);
-    });
-    appWebview.listen("ui_command_check_recipient_key", (event) => {
-        const payload: any = event.payload;
-        if (payload && payload.status === "ok") {
-            addMessage(`Key (base64): ${payload.key}`, "server");
-        } else if (payload && payload.status === "error") {
-            addMessage(`Error: ${payload.message}`, "server");
-        } else {
-            addMessage(JSON.stringify(payload), "server");
-        }
-        console.log(payload);
-    });
-    appWebview.listen("ui_info_server_not_responding", (event) => {
-        const payload: any = event.payload;
-        console.log(payload);
-        toaster.info({ title: "Server not responding", description: payload });
-    });
     async function addMessage(text: string, senderId: string) {
         chatHistories = {
             ...chatHistories,
@@ -158,6 +206,51 @@
             });
         }
     }
+
+    onDestroy(() => {
+        window.removeEventListener("resize", checkMobile);
+        if (unlistenFctp) {
+            try {
+                unlistenFctp();
+            } catch (e) {
+                console.warn("Failed to unlisten fctp-message", e);
+            }
+        }
+        if (unlistenCheckRecipientKey) {
+            try {
+                unlistenCheckRecipientKey();
+            } catch (e) {
+                console.warn(
+                    "Failed to unlisten ui_command_check_recipient_key",
+                    e,
+                );
+            }
+        }
+        if (unlistenServerNotResponding) {
+            try {
+                unlistenServerNotResponding();
+            } catch (e) {
+                console.warn(
+                    "Failed to unlisten ui_info_server_not_responding",
+                    e,
+                );
+            }
+        }
+        if (unlistenBlur) {
+            try {
+                unlistenBlur();
+            } catch (e) {
+                console.warn("Failed to unlisten tauri://blur", e);
+            }
+        }
+        if (unlistenFocus) {
+            try {
+                unlistenFocus();
+            } catch (e) {
+                console.warn("Failed to unlisten tauri://focus", e);
+            }
+        }
+    });
 
     function disconnectFromServer() {
         sendStatus("USER::DISCONNECT");
