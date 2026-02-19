@@ -93,7 +93,7 @@
     <div
         class="fixed top-1/2 left-1/2
            z-50 body-background-color dark:body-background-color-dark text-inherit
-           max-w-[640px] w-full rounded-container p-6 shadow-xl space-y-2 animate-fadeIn"
+           max-w-160 w-full rounded-container p-6 shadow-xl space-y-2 animate-fadeIn"
     >
         <header class="mb-4 flex flex-col sm:flex-row justify-between">
             <h2 class="text-2xl font-semibold text-clip mr-4 break-all">
@@ -188,7 +188,6 @@
         </div>
     </div>
     <div class="m-2">
-        <p>This is a development version. It should not be shared.</p>
         <p>© Loop64™ / FOG Privacy Toolkit</p>
     </div>
 </main>

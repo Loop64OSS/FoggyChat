@@ -24,7 +24,13 @@
     let sidebarOpen = false;
     let isMobile = false;
 
-    let chatHistories: Record<string, string[]> = {};
+    interface Message {
+        text: string;
+        fromSelf: boolean;
+        senderId: string;
+    }
+
+    let chatHistories: Record<string, Message[]> = {};
 
     $: currentMessages = chatHistories[recipient] || [];
     let messagesContainer: HTMLDivElement;
@@ -93,23 +99,27 @@
                 "fctp-message",
                 async (event) => {
                     const { sender, content } = event.payload;
+
                     addMessage(content, sender);
                     // Send a native notification only when the webview is blurred
-                    if (isBlurred) {
-                        sendNotification({
-                            title: "FoggyChat",
-                            body: sender + ": " + content,
+
+                    if (!sender.endsWith("*")) {
+                        if (isBlurred || sender != recipient) {
+                            sendNotification({
+                                title: "FoggyChat",
+                                body: sender + ": " + content,
+                            });
+                        }
+                        addedUsers.forEach((user) => {
+                            if (sender != user) {
+                                AddedRecipientDisplayName = sender;
+                                AddedRecipientUserName = sender;
+                                addRecipient();
+                                AddedRecipientDisplayName = "";
+                                AddedRecipientDisplayName = "";
+                            }
                         });
                     }
-                    addedUsers.forEach((user) => {
-                        if (sender != user) {
-                            AddedRecipientDisplayName = sender;
-                            AddedRecipientUserName = sender;
-                            addRecipient();
-                            AddedRecipientDisplayName = "";
-                            AddedRecipientDisplayName = "";
-                        }
-                    });
                 },
             );
 
@@ -187,9 +197,21 @@
         obj.scroll({ top: obj.scrollHeight, behavior: "smooth" });
     };
     async function addMessage(text: string, senderId: string) {
+        let fromSelf = false;
+        if (senderId.endsWith("*")) {
+            fromSelf = true;
+            senderId = senderId.slice(0, -1);
+        }
+
+        const messageObj: Message = {
+            text,
+            fromSelf,
+            senderId,
+        };
+
         chatHistories = {
             ...chatHistories,
-            [senderId]: [...(chatHistories[senderId] || []), text],
+            [senderId]: [...(chatHistories[senderId] || []), messageObj],
         };
 
         await tick();
@@ -203,6 +225,25 @@
                 description: text,
                 closable: true,
                 type: "info",
+            });
+        }
+    }
+
+    async function copyMessage(text: string) {
+        try {
+            await navigator.clipboard.writeText(text);
+            toaster.info({
+                title: "Copied",
+                description: "The message has been added to the clipboard",
+                closable: true,
+                type: "success",
+            });
+        } catch (e) {
+            toaster.info({
+                title: "Error",
+                description: "Couldn't copy the message",
+                closable: true,
+                type: "error",
             });
         }
     }
@@ -346,7 +387,7 @@
                                 on:click={() => selectRecipient(user.id)}
                                 class="flex p-3 items-center gap-3 flex-1 text-left min-w-0"
                             >
-                                <div class="relative flex-shrink-0">
+                                <div class="relative shrink-0">
                                     {#if user.id == "server"}
                                         <div
                                             class="w-10 h-10 flex items-center justify-center font-medium"
@@ -376,7 +417,7 @@
 
                             <!-- If the user is not server, show the user controls -->
                             {#if user.id != "server"}
-                                <div class="flex items-center flex-shrink-0">
+                                <div class="flex items-center shrink-0">
                                     <button
                                         class="p-1 rounded-base hover:preset-filled-primary-100-900"
                                         title="Verify authenticity of recipient key"
@@ -470,10 +511,19 @@
                 </div>
             {:else}
                 {#each currentMessages as msg, index}
-                    <div
-                        class="preset-filled-surface-100-900 card p-3 break-words"
-                    >
-                        <p class="text-sm leading-relaxed">{msg}</p>
+                    <div class="flex wrap-break-word">
+                        <div
+                            role="button"
+                            tabindex="0"
+                            on:click={() => copyMessage(msg.text)}
+                            on:keydown={(e) =>
+                                (e.key === "Enter" || e.key === " ") &&
+                                copyMessage(msg.text)}
+                            class={`max-w-[70%] p-3 wrap-break-word rounded-base cursor-pointer select-text ${msg.fromSelf ? "ml-auto bg-primary-500 text-white" : "mr-auto preset-filled-surface-100-900"}`}
+                            title="Click to copy a message"
+                        >
+                            <p class="text-sm leading-relaxed">{msg.text}</p>
+                        </div>
                     </div>
                 {/each}
             {/if}

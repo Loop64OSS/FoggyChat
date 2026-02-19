@@ -1,3 +1,6 @@
 import { createToaster } from "@skeletonlabs/skeleton-svelte";
 
-export const toaster = createToaster({ overlap: true });
+export const toaster = createToaster({
+    overlap: true,
+    placement: "bottom-start",
+});

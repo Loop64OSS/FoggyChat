@@ -24,46 +24,11 @@ body {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
     height: 100vh;
+
 }
 
 #app {
     height: 100%;
-}
-
-@media (pointer: coarse),
-(hover: none) {
-    [title] {
-        position: relative;
-        display: inline-flex;
-        justify-content: center;
-        z-index: 0;
-    }
-
-    [title]:focus::after {
-        content: attr(title);
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        top: calc(100% + 8px);
-        color: var(--base-font-color-dark);
-        background-color: var(--body-background-color-dark);
-        border: 1px solid var(--base-font-color-dark);
-        box-sizing: border-box;
-        padding: 6px;
-        z-index: 100;
-        border-radius: var(--radius-base);
-        font-size: medium;
-        width: auto;
-        /* always fit inside viewport with a small margin */
-        max-width: calc(100vw - 32px);
-        white-space: normal;
-        /* prefer breaking whole words, avoid breaking between single letters */
-        overflow-wrap: break-word;
-        word-break: normal;
-        min-width: 80px;
-        text-align: center;
-        pointer-events: none;
-    }
 }
 
 
