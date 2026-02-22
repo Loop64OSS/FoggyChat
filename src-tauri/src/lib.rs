@@ -66,6 +66,7 @@ pub fn run() {
         .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
             ui_command_send_fctp_message,
+            ui_command_auto_send_fctp_message,
             ui_command_request_connection,
             ui_command_status,
             ui_command_select_recipient,
@@ -92,6 +93,27 @@ async fn ui_command_send_fctp_message(
 
     /* Command vs message: '/' commands are server commands */
     if message.starts_with("/") {
+        handle_command_message(message, &app).await
+    } else {
+        handle_regular_message(message, recipient, &app).await
+    }
+}
+#[tauri::command]
+async fn ui_command_auto_send_fctp_message(
+    message: &str,
+    recipient: &str,
+    app: AppHandle,
+) -> Result<(), String> {
+    /* Validate inputs */
+    if message.is_empty() {
+        return Err("Message cannot be empty".into());
+    }
+    if recipient.is_empty() {
+        return Err("Recipient cannot be empty".into());
+    }
+
+    /* Command vs message: '/' commands are server commands */
+    if message.starts_with("/") && !message.starts_with("/event:") {
         handle_command_message(message, &app).await
     } else {
         handle_regular_message(message, recipient, &app).await

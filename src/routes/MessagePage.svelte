@@ -17,6 +17,7 @@
     import { serverAddress } from "../lib/store.js";
     import { toaster } from "../lib/toaster-svelte";
     import { sendNotification } from "@tauri-apps/plugin-notification";
+    import { TauriEvent } from "@tauri-apps/api/event";
 
     const appWebview = getCurrentWebviewWindow();
     let message = "";
@@ -42,6 +43,7 @@
     let unlistenServerNotResponding: (() => void) | undefined;
     let unlistenBlur: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
+    let unlistenExit: (() => void) | undefined;
     let isBlurred = false;
 
     interface Recipient {
@@ -50,33 +52,6 @@
         pk: string;
     }
     let addedUsers: Recipient[] = [];
-    function addRecipient() {
-        const exists = addedUsers.some(
-            (user) => user.id === AddedRecipientUserName,
-        );
-
-        if (!exists) {
-            addedUsers = [
-                ...addedUsers,
-                {
-                    id: AddedRecipientUserName,
-                    name: AddedRecipientDisplayName,
-                    pk: AddedRecipientPublicKey,
-                },
-            ];
-            selectRecipient(AddedRecipientUserName);
-        }
-
-        AddedRecipientUserName = "";
-        AddedRecipientDisplayName = "";
-        AddedRecipientPublicKey = "";
-    }
-    function checkMobile() {
-        isMobile = window.innerWidth < 640;
-        if (!isMobile) {
-            sidebarOpen = true;
-        }
-    }
 
     onMount(async () => {
         checkMobile();
@@ -87,6 +62,15 @@
 
         // Register Tauri webview listeners and keep unlisten handles
         try {
+            unlistenExit = await appWebview.listen(
+                TauriEvent.WINDOW_CLOSE_REQUESTED,
+                async () => {
+                    // call the cleanup function which deletes the you as the contact on others client
+                    disconnectFromServer();
+                    //close the window
+                    appWebview.destroy();
+                },
+            );
             // Track webview focus/blur to avoid sending notifications when focused
             unlistenBlur = await appWebview.listen("tauri://blur", () => {
                 isBlurred = true;
@@ -99,6 +83,11 @@
                 "fctp-message",
                 async (event) => {
                     const { sender, content } = event.payload;
+
+                    if (content == "/event:disconnected") {
+                        removeRecipient(sender);
+                        return;
+                    }
 
                     addMessage(content, sender);
                     // Send a native notification only when the webview is blurred
@@ -153,7 +142,103 @@
             console.warn("Failed to register webview listeners", e);
         }
     });
+    onDestroy(() => {
+        window.removeEventListener("resize", checkMobile);
+        if (unlistenFctp) {
+            try {
+                unlistenFctp();
+            } catch (e) {
+                console.warn("Failed to unlisten fctp-message", e);
+            }
+        }
+        if (unlistenCheckRecipientKey) {
+            try {
+                unlistenCheckRecipientKey();
+            } catch (e) {
+                console.warn(
+                    "Failed to unlisten ui_command_check_recipient_key",
+                    e,
+                );
+            }
+        }
+        if (unlistenServerNotResponding) {
+            try {
+                unlistenServerNotResponding();
+            } catch (e) {
+                console.warn(
+                    "Failed to unlisten ui_info_server_not_responding",
+                    e,
+                );
+            }
+        }
+        if (unlistenBlur) {
+            try {
+                unlistenBlur();
+            } catch (e) {
+                console.warn("Failed to unlisten tauri://blur", e);
+            }
+        }
+        if (unlistenFocus) {
+            try {
+                unlistenFocus();
+            } catch (e) {
+                console.warn("Failed to unlisten tauri://focus", e);
+            }
+        }
+        if (unlistenExit) {
+            try {
+                unlistenExit();
+            } catch (e) {
+                console.warn("Failed to unlisten Exit", e);
+            }
+        }
+    });
+    function addRecipient() {
+        const exists = addedUsers.some(
+            (user) => user.id === AddedRecipientUserName,
+        );
 
+        if (!exists) {
+            addedUsers = [
+                ...addedUsers,
+                {
+                    id: AddedRecipientUserName,
+                    name: AddedRecipientDisplayName,
+                    pk: AddedRecipientPublicKey,
+                },
+            ];
+            selectRecipient(AddedRecipientUserName);
+        }
+
+        AddedRecipientUserName = "";
+        AddedRecipientDisplayName = "";
+        AddedRecipientPublicKey = "";
+    }
+    function checkMobile() {
+        isMobile = window.innerWidth < 640;
+        if (!isMobile) {
+            sidebarOpen = true;
+        }
+    }
+
+    async function cleanup() {
+        for (const user of addedUsers) {
+            if (user.id !== "server") {
+                await invoke("ui_command_auto_send_fctp_message", {
+                    message: "/event:disconnected",
+                    recipient: user.id,
+                }).catch(() => {});
+            }
+        }
+    }
+    async function disconnectFromServer() {
+        await cleanup();
+        await sendStatus("USER::DISCONNECT");
+    }
+
+    function toggleSidebar() {
+        sidebarOpen = !sidebarOpen;
+    }
     function sendMessage() {
         if (recipient === "server") {
             message = "/" + message;
@@ -246,59 +331,6 @@
                 type: "error",
             });
         }
-    }
-
-    onDestroy(() => {
-        window.removeEventListener("resize", checkMobile);
-        if (unlistenFctp) {
-            try {
-                unlistenFctp();
-            } catch (e) {
-                console.warn("Failed to unlisten fctp-message", e);
-            }
-        }
-        if (unlistenCheckRecipientKey) {
-            try {
-                unlistenCheckRecipientKey();
-            } catch (e) {
-                console.warn(
-                    "Failed to unlisten ui_command_check_recipient_key",
-                    e,
-                );
-            }
-        }
-        if (unlistenServerNotResponding) {
-            try {
-                unlistenServerNotResponding();
-            } catch (e) {
-                console.warn(
-                    "Failed to unlisten ui_info_server_not_responding",
-                    e,
-                );
-            }
-        }
-        if (unlistenBlur) {
-            try {
-                unlistenBlur();
-            } catch (e) {
-                console.warn("Failed to unlisten tauri://blur", e);
-            }
-        }
-        if (unlistenFocus) {
-            try {
-                unlistenFocus();
-            } catch (e) {
-                console.warn("Failed to unlisten tauri://focus", e);
-            }
-        }
-    });
-
-    function disconnectFromServer() {
-        sendStatus("USER::DISCONNECT");
-    }
-
-    function toggleSidebar() {
-        sidebarOpen = !sidebarOpen;
     }
 </script>
 
@@ -441,7 +473,7 @@
                 </div>
             </div>
 
-            <!-- Sidebar Footer -->
+            <!-- Sidebar Footer 
             <div class="p-4 border-t border-t-surface-200-800">
                 <button
                     class="w-full flex items-center gap-2 p-2 hover:preset-filled-surface-100-900 rounded-base transition-colors opacity-70 hover:opacity-100"
@@ -449,7 +481,7 @@
                     <Settings size={16} />
                     <span class="text-sm disabled">Settings</span>
                 </button>
-            </div>
+            </div>-->
         </div>
     </div>
 
