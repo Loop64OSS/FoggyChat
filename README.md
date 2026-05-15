@@ -1,5 +1,6 @@
 ## This project has been abandoned and released to the public, and will no longer be developed.
 ### You can fork this project and improve it to suit your needs.
+### Server package available on https://github.com/Loop64OSS/FoggyChat-Server
 # FoggyChat
 
 FoggyChat is an anonymous, fully decentralized, end-to-end encrypted direct messaging solution with its own lightweight transfer protocol.
