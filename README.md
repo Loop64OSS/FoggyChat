@@ -1,3 +1,5 @@
+## This project has been abandoned and released to the public, and will no longer be developed.
+
 # FoggyChat
 
 FoggyChat is an anonymous, fully decentralized, end-to-end encrypted direct messaging solution with its own lightweight transfer protocol.
